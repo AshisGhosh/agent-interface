@@ -3,6 +3,7 @@
 from agent_interface.scan import (
     ProcessInfo,
     _looks_like_agent,
+    deduplicate_by_pane,
 )
 
 
@@ -39,3 +40,32 @@ def test_rejects_agi_direct():
 def test_rejects_claude_internal_processes():
     info = ProcessInfo(pid=1, cwd="/home/user/.claude/usage-data", cmdline="claude something")
     assert not _looks_like_agent(info)
+
+
+def _tmux_proc(pid, cwd="/tmp", session="s", window="0", pane="0"):
+    return ProcessInfo(
+        pid=pid, cwd=cwd, cmdline="claude",
+        tmux_session=session, tmux_window=window, tmux_pane=pane,
+    )
+
+
+def test_deduplicate_keeps_lowest_pid_per_pane():
+    procs = [_tmux_proc(100, pane="1"), _tmux_proc(200, pane="1")]
+    result = deduplicate_by_pane(procs)
+    assert len(result) == 1
+    assert result[0].pid == 100
+
+
+def test_deduplicate_keeps_different_panes():
+    procs = [_tmux_proc(100, cwd="/a", pane="0"), _tmux_proc(200, cwd="/b", pane="1")]
+    result = deduplicate_by_pane(procs)
+    assert len(result) == 2
+
+
+def test_deduplicate_keeps_non_tmux():
+    procs = [
+        ProcessInfo(pid=100, cwd="/a", cmdline="claude"),
+        ProcessInfo(pid=200, cwd="/b", cmdline="claude"),
+    ]
+    result = deduplicate_by_pane(procs)
+    assert len(result) == 2

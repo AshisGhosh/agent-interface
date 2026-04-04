@@ -185,13 +185,15 @@ def _print_table(sessions: list[Session]) -> None:
 
         table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1, 0, 2))
         table.add_column("PID", style="cyan", no_wrap=True)
-        table.add_column("LABEL", no_wrap=True)
+        table.add_column("LABEL", max_width=45, overflow="ellipsis")
         table.add_column("STATE", no_wrap=True)
         table.add_column("UPDATED", justify="right", no_wrap=True)
+        table.add_column("TMUX", style="dim", no_wrap=True, justify="right")
 
         for s in group:
             stale = is_stale(s)
-            pid = str(s.pid) if s.pid else _short_id(s.id)
+            tmux = f"{s.tmux_session}:{s.tmux_window}" if s.tmux_session else "—"
+            pid = str(s.pid) if s.pid else "—"
             label = s.label or "—"
             updated = _relative_time(s.updated_at)
 
@@ -204,6 +206,7 @@ def _print_table(sessions: list[Session]) -> None:
                 label,
                 _state_text(s.state, stale),
                 updated,
+                tmux,
                 style=row_style,
             )
 
@@ -378,6 +381,22 @@ def cmd_archive(query: str) -> None:
     conn = get_connection()
     archive_session(conn, s.id)
     console.print(f"Archived: [cyan]{_short_id(s.id)}[/cyan]")
+
+
+@app.command("prune")
+def cmd_prune() -> None:
+    """Archive all stale and done sessions."""
+    conn = get_connection()
+    sessions = list_sessions(conn, include_done=True)
+    pruned = 0
+    for s in sessions:
+        if s.state == SessionState.DONE or is_stale(s):
+            archive_session(conn, s.id)
+            pruned += 1
+    if pruned:
+        console.print(f"Pruned {pruned} session(s).")
+    else:
+        console.print("[dim]Nothing to prune.[/dim]")
 
 
 @app.command("restore")

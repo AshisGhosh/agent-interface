@@ -172,6 +172,27 @@ def enrich_with_tmux(processes: list[ProcessInfo]) -> None:
             proc.tmux_session, proc.tmux_window, proc.tmux_pane = ctx
 
 
+def deduplicate_by_pane(processes: list[ProcessInfo]) -> list[ProcessInfo]:
+    """Keep only one claude process per tmux pane (the oldest/lowest PID).
+
+    Processes not in tmux are always kept.
+    """
+    pane_best: dict[str, ProcessInfo] = {}
+    no_pane: list[ProcessInfo] = []
+
+    for proc in processes:
+        if proc.tmux_session is None:
+            no_pane.append(proc)
+            continue
+
+        pane_key = f"{proc.tmux_session}:{proc.tmux_window}.{proc.tmux_pane}"
+        existing = pane_best.get(pane_key)
+        if existing is None or proc.pid < existing.pid:
+            pane_best[pane_key] = proc
+
+    return list(pane_best.values()) + no_pane
+
+
 def scan_and_register() -> tuple[bool, list[tuple[str, ProcessInfo]]]:
     """Scan for agent processes, install hooks, and register new ones.
 
@@ -183,6 +204,7 @@ def scan_and_register() -> tuple[bool, list[tuple[str, ProcessInfo]]]:
 
     processes = find_claude_processes()
     enrich_with_tmux(processes)
+    processes = deduplicate_by_pane(processes)
 
     conn = get_connection()
     hostname = socket.gethostname()

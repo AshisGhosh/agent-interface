@@ -26,6 +26,11 @@ def test_help():
     assert "agi" in result.output.lower() or "list" in result.output.lower()
 
 
+def test_help_short():
+    result = runner.invoke(app, ["-h"])
+    assert result.exit_code == 0
+
+
 def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
@@ -33,10 +38,10 @@ def test_version():
 
 
 def test_bare_agi_defaults_to_list():
-    runner.invoke(app, ["register", "--id", "s1", "--host", "h"])
+    runner.invoke(app, ["register", "--id", "s1", "--cwd", "/tmp/myproject"])
     result = runner.invoke(app, [])
     assert result.exit_code == 0
-    assert "s1" in result.output
+    assert "myproject" in result.output
 
 
 def test_register_and_list():
@@ -45,13 +50,14 @@ def test_register_and_list():
         "--host", "myhost",
         "--cwd", "/tmp/work",
         "--id", "sess-1",
+        "--label", "test task",
     ])
     assert result.exit_code == 0
     assert "sess-1" in result.output
 
     result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
-    assert "sess-1" in result.output
+    assert "test task" in result.output
     assert "/tmp/work" in result.output
 
 
@@ -84,25 +90,25 @@ def test_rename():
 
 
 def test_archive_and_restore():
-    runner.invoke(app, ["register", "--id", "s1"])
+    runner.invoke(app, ["register", "--id", "s1", "--label", "trackme"])
 
     result = runner.invoke(app, ["archive", "s1"])
     assert result.exit_code == 0
 
     # Archived session should not appear in default list.
     result = runner.invoke(app, ["list"])
-    assert "s1" not in result.output
+    assert "trackme" not in result.output
 
     # But should appear with --all.
     result = runner.invoke(app, ["list", "--all"])
-    assert "s1" in result.output
+    assert "trackme" in result.output
 
     # Restore it.
     result = runner.invoke(app, ["restore", "s1"])
     assert result.exit_code == 0
 
     result = runner.invoke(app, ["list"])
-    assert "s1" in result.output
+    assert "trackme" in result.output
 
 
 def test_update_state():
@@ -120,24 +126,28 @@ def test_update_state_invalid():
 
 
 def test_waiting_filter():
-    runner.invoke(app, ["register", "--id", "s1", "--state", "running"])
-    runner.invoke(app, ["register", "--id", "s2", "--state", "waiting_for_user"])
+    runner.invoke(app, [
+        "register", "--id", "s1", "--state", "running", "--label", "task-a",
+    ])
+    runner.invoke(app, [
+        "register", "--id", "s2", "--state", "waiting_for_user", "--label", "task-b",
+    ])
 
     result = runner.invoke(app, ["waiting"])
     assert result.exit_code == 0
-    assert "s2" in result.output
-    assert "s1" not in result.output
+    assert "task-b" in result.output
+    assert "task-a" not in result.output
 
 
 def test_done_hidden_from_list():
-    runner.invoke(app, ["register", "--id", "s1"])
+    runner.invoke(app, ["register", "--id", "s1", "--label", "trackme"])
     runner.invoke(app, ["update-state", "s1", "done"])
 
     result = runner.invoke(app, ["list"])
-    assert "s1" not in result.output
+    assert "trackme" not in result.output
 
     result = runner.invoke(app, ["list", "--all"])
-    assert "s1" in result.output
+    assert "trackme" in result.output
 
 
 def test_register_with_pid():
