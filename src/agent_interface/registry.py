@@ -111,8 +111,29 @@ def register_session(conn: sqlite3.Connection, session: Session) -> Session:
     return session
 
 
+def find_session(conn: sqlite3.Connection, query: str) -> list[Session]:
+    """Find sessions matching a query against id, label, cwd, or pid.
+
+    Returns all matches (caller decides how to handle 0, 1, or many).
+    """
+    # Exact ID match first.
+    row = conn.execute("SELECT * FROM sessions WHERE id=?", (query,)).fetchone()
+    if row is not None:
+        return [_maybe_reap(conn, _row_to_session(row))]
+
+    # Search across fields with LIKE.
+    pattern = f"%{query}%"
+    rows = conn.execute(
+        """SELECT * FROM sessions
+           WHERE id LIKE ? OR label LIKE ? OR cwd LIKE ? OR CAST(pid AS TEXT) = ?
+           ORDER BY updated_at DESC""",
+        (pattern, pattern, pattern, query),
+    ).fetchall()
+    return [_maybe_reap(conn, _row_to_session(r)) for r in rows]
+
+
 def get_session(conn: sqlite3.Connection, session_id: str) -> Optional[Session]:
-    """Fetch a single session by id, with pid liveness check."""
+    """Fetch a single session by exact id, with pid liveness check."""
     row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
     if row is None:
         return None

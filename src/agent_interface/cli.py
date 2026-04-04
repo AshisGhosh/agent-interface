@@ -12,7 +12,7 @@ from agent_interface.db import get_connection
 from agent_interface.models import Session
 from agent_interface.registry import (
     archive_session,
-    get_session,
+    find_session,
     is_stale,
     list_events,
     list_sessions,
@@ -30,27 +30,41 @@ app = typer.Typer(
 )
 
 
-def _short_id(sid: str, width: int = 12) -> str:
+def _short_id(sid: str, width: int = 8) -> str:
     if len(sid) <= width:
         return sid
-    return sid[:width] + "…"
+    return sid[:width]
+
+
+def _resolve(query: str) -> Session:
+    """Resolve a query to exactly one session, or exit with error."""
+    conn = get_connection()
+    matches = find_session(conn, query)
+    if len(matches) == 0:
+        typer.echo(f"No session matching: {query}", err=True)
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        typer.echo(f"Ambiguous — {len(matches)} sessions match '{query}':", err=True)
+        for s in matches[:10]:
+            typer.echo(f"  {_short_id(s.id, 16):16}  {s.label or '—':16}  {s.cwd or '—'}", err=True)
+        raise typer.Exit(1)
+    return matches[0]
 
 
 def _format_table(sessions: list[Session]) -> str:
     if not sessions:
         return "No sessions found."
 
-    headers = ["ID", "LABEL", "STATE", "HOST", "CWD", "UPDATED"]
+    headers = ["PID", "LABEL", "STATE", "CWD", "UPDATED"]
     rows: list[list[str]] = []
     for s in sessions:
         state_display = s.state
         if is_stale(s):
             state_display = f"{s.state} (stale)"
         rows.append([
-            _short_id(s.id),
+            str(s.pid) if s.pid else _short_id(s.id),
             s.label or "—",
             state_display,
-            s.host or "—",
             s.cwd or "—",
             s.updated_at or "—",
         ])
@@ -129,16 +143,13 @@ def cmd_waiting() -> None:
 
 
 @app.command("show")
-def cmd_show(session_id: str) -> None:
-    """Show full details for a session."""
-    conn = get_connection()
-    s = get_session(conn, session_id)
-    if s is None:
-        typer.echo(f"Session not found: {session_id}", err=True)
-        raise typer.Exit(1)
+def cmd_show(query: str) -> None:
+    """Show full details for a session. Matches against id, label, cwd, or pid."""
+    s = _resolve(query)
     typer.echo(_format_detail(s))
 
-    events = list_events(conn, session_id)
+    conn = get_connection()
+    events = list_events(conn, s.id)
     if events:
         typer.echo(f"\n  Events ({len(events)}):")
         for e in events:
@@ -189,7 +200,7 @@ def cmd_register(
 
 
 @app.command("update-state")
-def cmd_update_state(session_id: str, state: str) -> None:
+def cmd_update_state(query: str, state: str) -> None:
     """Update the state of a session."""
     try:
         SessionState(state)
@@ -198,45 +209,92 @@ def cmd_update_state(session_id: str, state: str) -> None:
         typer.echo(f"Invalid state: {state}\nValid states: {valid}", err=True)
         raise typer.Exit(1)
 
+    s = _resolve(query)
     conn = get_connection()
-    s = update_state(conn, session_id, state)
-    if s is None:
-        typer.echo(f"Session not found: {session_id}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"State updated: {session_id} → {state}")
+    update_state(conn, s.id, state)
+    typer.echo(f"State updated: {_short_id(s.id)} → {state}")
 
 
 @app.command("rename")
-def cmd_rename(session_id: str, label: str) -> None:
+def cmd_rename(query: str, label: str) -> None:
     """Rename a session."""
+    s = _resolve(query)
     conn = get_connection()
-    s = rename_session(conn, session_id, label)
-    if s is None:
-        typer.echo(f"Session not found: {session_id}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"Renamed: {session_id} → {label}")
+    rename_session(conn, s.id, label)
+    typer.echo(f"Renamed: {_short_id(s.id)} → {label}")
 
 
 @app.command("archive")
-def cmd_archive(session_id: str) -> None:
+def cmd_archive(query: str) -> None:
     """Archive a session."""
+    s = _resolve(query)
     conn = get_connection()
-    s = archive_session(conn, session_id)
-    if s is None:
-        typer.echo(f"Session not found: {session_id}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"Archived: {session_id}")
+    archive_session(conn, s.id)
+    typer.echo(f"Archived: {_short_id(s.id)}")
 
 
 @app.command("restore")
-def cmd_restore(session_id: str) -> None:
+def cmd_restore(query: str) -> None:
     """Restore an archived session."""
+    s = _resolve(query)
     conn = get_connection()
-    s = restore_session(conn, session_id)
-    if s is None:
-        typer.echo(f"Session not found: {session_id}", err=True)
+    restore_session(conn, s.id)
+    typer.echo(f"Restored: {_short_id(s.id)}")
+
+
+@app.command("hook", hidden=True)
+def cmd_hook() -> None:
+    """Process a hook event from stdin (called by agent hooks)."""
+    from agent_interface.hooks import read_and_process_stdin
+
+    result = read_and_process_stdin()
+    # Silent by default — hooks shouldn't produce visible output.
+    # Write to stderr only on error for debugging.
+    if result.startswith("error:"):
+        typer.echo(result, err=True)
         raise typer.Exit(1)
-    typer.echo(f"Restored: {session_id}")
+
+
+@app.command("init-hooks")
+def cmd_init_hooks() -> None:
+    """Install agi hooks into ~/.claude/settings.json."""
+    from agent_interface.hooks import install_hooks
+
+    ok, msg = install_hooks()
+    typer.echo(msg)
+    if not ok:
+        raise typer.Exit(1)
+
+
+@app.command("scan")
+def cmd_scan() -> None:
+    """Scan for running agent sessions and register new ones."""
+    from agent_interface.scan import scan_and_register
+
+    hooks_ok, results = scan_and_register()
+
+    if hooks_ok:
+        typer.echo("Hooks installed into ~/.claude/settings.json")
+
+    if not results:
+        typer.echo("No agent sessions found.")
+        return
+
+    registered = [(a, p) for a, p in results if a == "registered"]
+    skipped = [(a, p) for a, p in results if a == "skipped"]
+
+    for _, proc in registered:
+        tmux = ""
+        if proc.tmux_session:
+            tmux = f" (tmux {proc.tmux_session}:{proc.tmux_window}.{proc.tmux_pane})"
+        typer.echo(f"  + {proc.pid}  {proc.cwd or '?'}{tmux}")
+
+    if registered:
+        typer.echo(f"\nRegistered {len(registered)} new session(s).")
+    if skipped:
+        typer.echo(f"Skipped {len(skipped)} already tracked.")
+    if not registered and skipped:
+        typer.echo("All found sessions are already tracked.")
 
 
 def main() -> None:

@@ -52,7 +52,7 @@ def test_register_and_list():
     result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
     assert "sess-1" in result.output
-    assert "myhost" in result.output
+    assert "/tmp/work" in result.output
 
 
 def test_register_auto_id():
