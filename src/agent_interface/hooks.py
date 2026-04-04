@@ -15,6 +15,7 @@ from agent_interface.registry import (
     _row_to_session,
     get_session,
     register_session,
+    rename_session,
     update_state,
 )
 from agent_interface.states import SessionState
@@ -33,8 +34,26 @@ EVENT_STATE_MAP: dict[str, str] = {
 HEARTBEAT_ONLY_EVENTS = {"PostToolUse"}
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CLAUDE_MD_PATH = Path.home() / ".claude" / "CLAUDE.md"
 
-HOOK_EVENTS = ["SessionStart", "Stop", "PostToolUse", "Notification", "SessionEnd"]
+AGI_INSTRUCTION_MARKER = "<!-- agi:auto-label -->"
+AGI_INSTRUCTION = f"""{AGI_INSTRUCTION_MARKER}
+## Session labeling (agi)
+
+This machine uses `agi` to track coding agent sessions. When you start working on a task, \
+update your session label by running:
+  agi label "5-10 word summary of the task"
+
+Keep the summary short and descriptive. Update it if the focus of work changes significantly.
+Do not update the label on every prompt — only when the task itself changes.
+"""
+
+HOOK_EVENTS = [
+    "SessionStart", "Stop", "PostToolUse", "Notification", "SessionEnd",
+    "UserPromptSubmit",
+]
+
+MAX_LABEL_LENGTH = 60
 
 
 def _get_parent_pid(pid: int) -> Optional[int]:
@@ -91,8 +110,30 @@ def generate_hook_config() -> dict[str, list[dict]]:
     return {event: [_build_hook_entry()] for event in HOOK_EVENTS}
 
 
+def _install_claude_md() -> str:
+    """Append agi instruction to ~/.claude/CLAUDE.md if not already present."""
+    CLAUDE_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    if CLAUDE_MD_PATH.exists():
+        content = CLAUDE_MD_PATH.read_text()
+        if AGI_INSTRUCTION_MARKER in content:
+            # Replace existing instruction with latest version.
+            import re
+
+            pattern = re.escape(AGI_INSTRUCTION_MARKER) + r".*?(?=\n<!-- |$)"
+            content = re.sub(pattern, AGI_INSTRUCTION.rstrip(), content, flags=re.DOTALL)
+            CLAUDE_MD_PATH.write_text(content)
+            return "CLAUDE.md instruction updated."
+    else:
+        content = ""
+
+    content = content.rstrip() + "\n\n" + AGI_INSTRUCTION if content else AGI_INSTRUCTION
+    CLAUDE_MD_PATH.write_text(content)
+    return "CLAUDE.md instruction added."
+
+
 def install_hooks() -> tuple[bool, str]:
-    """Write hook config into ~/.claude/settings.json.
+    """Write hook config into ~/.claude/settings.json and CLAUDE.md instruction.
 
     Merges with existing settings. Returns (success, message).
     """
@@ -108,18 +149,48 @@ def install_hooks() -> tuple[bool, str]:
     existing_hooks = settings.get("hooks", {})
     new_hooks = generate_hook_config()
 
-    # Check for conflicts — warn if hooks already exist for these events.
     conflicts = [e for e in HOOK_EVENTS if e in existing_hooks]
 
-    # Merge: our hooks replace entries for our events, preserve others.
     existing_hooks.update(new_hooks)
     settings["hooks"] = existing_hooks
 
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
+    claude_md_msg = _install_claude_md()
+
+    parts = ["Hooks installed."]
     if conflicts:
-        return True, f"Hooks installed. Replaced existing hooks for: {', '.join(conflicts)}"
-    return True, "Hooks installed."
+        parts.append(f"Replaced hooks for: {', '.join(conflicts)}.")
+    parts.append(claude_md_msg)
+    return True, " ".join(parts)
+
+
+def _truncate_label(text: str) -> str:
+    """Truncate to MAX_LABEL_LENGTH, breaking at word boundary."""
+    text = text.strip().split("\n")[0]  # First line only.
+    if len(text) <= MAX_LABEL_LENGTH:
+        return text
+    truncated = text[:MAX_LABEL_LENGTH].rsplit(" ", 1)[0]
+    return truncated
+
+
+def _handle_prompt_label(session_id: str, prompt: str) -> str:
+    """Set the session label from the first user prompt, if not already set."""
+    if not prompt.strip():
+        return "ignored: empty prompt"
+
+    conn = get_connection()
+    existing = get_session(conn, session_id)
+    if existing is None:
+        return "ignored: session not found for label"
+
+    # Don't overwrite an existing label.
+    if existing.label:
+        return f"skipped: label already set for {session_id}"
+
+    label = _truncate_label(prompt)
+    rename_session(conn, session_id, label)
+    return f"labeled: {session_id} → {label}"
 
 
 def process_hook(payload: dict) -> str:
@@ -132,6 +203,10 @@ def process_hook(payload: dict) -> str:
     cwd = payload.get("cwd")
     if not session_id:
         return "ignored: no session_id"
+
+    # Handle UserPromptSubmit — auto-label from first prompt.
+    if event_name == "UserPromptSubmit":
+        return _handle_prompt_label(session_id, payload.get("prompt", ""))
 
     target_state = EVENT_STATE_MAP.get(event_name)
     if not target_state:

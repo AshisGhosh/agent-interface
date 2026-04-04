@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import typer
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 from agent_interface import __version__
 from agent_interface.db import get_connection
@@ -27,7 +32,29 @@ from agent_interface.states import SessionState
 app = typer.Typer(
     help="agi — Agent Interface for coding agent sessions.",
     invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+console = Console()
+
+# ── display helpers ──────────────────────────────────────────────────────────
+
+STATE_STYLES: dict[str, str] = {
+    "waiting_for_user": "bold yellow",
+    "running": "green",
+    "blocked": "red",
+    "tests_failed": "red",
+    "done": "dim",
+    "idle": "dim",
+    "archived": "dim",
+    "stale": "dim red",
+    "unknown": "dim",
+}
+
+STATE_SHORT: dict[str, str] = {
+    "waiting_for_user": "waiting",
+    "tests_failed": "tests",
+}
 
 
 def _short_id(sid: str, width: int = 8) -> str:
@@ -36,76 +63,177 @@ def _short_id(sid: str, width: int = 8) -> str:
     return sid[:width]
 
 
+def _compact_cwd(path: str) -> str:
+    """Shorten paths like /home/user/foo to ~/foo."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+def _relative_time(iso_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 0:
+            return "just now"
+        if secs < 60:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins}m ago"
+        hours = mins // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+    except (ValueError, AttributeError):
+        return iso_str or "—"
+
+
+def _state_text(state: str, stale: bool = False) -> Text:
+    display = STATE_SHORT.get(state, state)
+    if stale:
+        display = f"{display} (stale)"
+        style = STATE_STYLES.get("stale", "")
+    else:
+        style = STATE_STYLES.get(state, "")
+    return Text(display, style=style)
+
+
 def _resolve(query: str) -> Session:
     """Resolve a query to exactly one session, or exit with error."""
     conn = get_connection()
     matches = find_session(conn, query)
     if len(matches) == 0:
-        typer.echo(f"No session matching: {query}", err=True)
+        console.print(f"[red]No session matching:[/red] {query}", highlight=False)
         raise typer.Exit(1)
     if len(matches) > 1:
-        typer.echo(f"Ambiguous — {len(matches)} sessions match '{query}':", err=True)
+        console.print(
+            f"[yellow]Ambiguous — {len(matches)} sessions match '{query}':[/yellow]",
+            highlight=False,
+        )
         for s in matches[:10]:
-            typer.echo(f"  {_short_id(s.id, 16):16}  {s.label or '—':16}  {s.cwd or '—'}", err=True)
+            pid = str(s.pid) if s.pid else _short_id(s.id)
+            console.print(
+                f"  {pid:>8}  {s.label or '—':16}  {_compact_cwd(s.cwd) if s.cwd else '—'}",
+                highlight=False,
+            )
         raise typer.Exit(1)
     return matches[0]
 
 
-def _format_table(sessions: list[Session]) -> str:
-    if not sessions:
-        return "No sessions found."
+def _group_by_cwd(sessions: list[Session]) -> list[tuple[str, list[Session]]]:
+    """Group sessions by CWD, sorted: groups with waiting first, then by most recent."""
+    from collections import OrderedDict
 
-    headers = ["PID", "LABEL", "STATE", "CWD", "UPDATED"]
-    rows: list[list[str]] = []
+    groups: dict[str, list[Session]] = OrderedDict()
     for s in sessions:
-        state_display = s.state
-        if is_stale(s):
-            state_display = f"{s.state} (stale)"
-        rows.append([
-            str(s.pid) if s.pid else _short_id(s.id),
-            s.label or "—",
-            state_display,
-            s.cwd or "—",
-            s.updated_at or "—",
-        ])
+        key = _compact_cwd(s.cwd) if s.cwd else "unknown"
+        groups.setdefault(key, []).append(s)
 
-    # Compute column widths.
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(cell))
+    # Within each group: waiting first, then by updated_at desc.
+    for key in groups:
+        groups[key].sort(
+            key=lambda s: (
+                0 if s.state == SessionState.WAITING_FOR_USER else 1,
+                s.updated_at or "",
+            ),
+        )
 
-    def fmt_row(cells: list[str]) -> str:
-        return "  ".join(c.ljust(col_widths[i]) for i, c in enumerate(cells))
+    # Sort groups: any group with a waiting session comes first, then by most recent update.
+    def group_sort_key(item: tuple[str, list[Session]]) -> tuple[int, str]:
+        _cwd, sess = item
+        has_waiting = any(s.state == SessionState.WAITING_FOR_USER for s in sess)
+        latest = max((s.updated_at or "" for s in sess), default="")
+        return (0 if has_waiting else 1, latest)
 
-    lines = [fmt_row(headers), "─" * (sum(col_widths) + 2 * (len(headers) - 1))]
-    for row in rows:
-        lines.append(fmt_row(row))
-    return "\n".join(lines)
+    return sorted(groups.items(), key=group_sort_key)
 
 
-def _format_detail(s: Session) -> str:
-    stale_marker = "  ← stale" if is_stale(s) else ""
-    fields = [
-        ("id", s.id),
-        ("label", s.label or "—"),
-        ("state", f"{s.state}{stale_marker}"),
-        ("host", s.host or "—"),
-        ("cwd", s.cwd or "—"),
-        ("repo_root", s.repo_root or "—"),
-        ("branch", s.branch or "—"),
-        ("tmux", f"{s.tmux_session or '—'}:{s.tmux_window or '—'}:{s.tmux_pane or '—'}"),
-        ("worktree", s.worktree_path or "—"),
-        ("pid", str(s.pid) if s.pid else "—"),
-        ("managed", "yes" if s.is_managed else "no"),
-        ("summary", s.summary or "—"),
-        ("created_at", s.created_at),
-        ("updated_at", s.updated_at),
-        ("last_seen_at", s.last_seen_at),
-        ("archived_at", s.archived_at or "—"),
-    ]
-    width = max(len(f[0]) for f in fields)
-    return "\n".join(f"  {k:<{width}}  {v}" for k, v in fields)
+def _print_table(sessions: list[Session]) -> None:
+    if not sessions:
+        console.print("[dim]No sessions found.[/dim]")
+        return
+
+    total = len(sessions)
+    n_waiting = sum(1 for s in sessions if s.state == SessionState.WAITING_FOR_USER)
+    n_running = sum(1 for s in sessions if s.state == SessionState.RUNNING)
+    n_other = total - n_waiting - n_running
+    projects = len({s.cwd for s in sessions})
+
+    parts = [f"[bold]{total}[/bold] sessions"]
+    if n_waiting:
+        parts.append(f"[bold yellow]{n_waiting} waiting[/bold yellow]")
+    if n_running:
+        parts.append(f"[green]{n_running} running[/green]")
+    if n_other:
+        parts.append(f"[dim]{n_other} other[/dim]")
+    parts.append(f"{projects} projects")
+
+    console.print(f"─── {' · '.join(parts)} ───")
+    console.print()
+
+    grouped = _group_by_cwd(sessions)
+
+    for i, (cwd, group) in enumerate(grouped):
+        if i > 0:
+            console.print()
+
+        console.print(f"[bold]{cwd}[/bold]")
+
+        table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1, 0, 2))
+        table.add_column("PID", style="cyan", no_wrap=True)
+        table.add_column("LABEL", no_wrap=True)
+        table.add_column("STATE", no_wrap=True)
+        table.add_column("UPDATED", justify="right", no_wrap=True)
+
+        for s in group:
+            stale = is_stale(s)
+            pid = str(s.pid) if s.pid else _short_id(s.id)
+            label = s.label or "—"
+            updated = _relative_time(s.updated_at)
+
+            row_style = ""
+            if s.state in ("done", "archived") or stale:
+                row_style = "dim"
+
+            table.add_row(
+                pid,
+                label,
+                _state_text(s.state, stale),
+                updated,
+                style=row_style,
+            )
+
+        console.print(table)
+
+
+def _print_detail(s: Session) -> None:
+    stale = is_stale(s)
+    state_display = _state_text(s.state, stale)
+
+    console.print()
+    console.print(f"  [bold]id[/bold]           {s.id}")
+    console.print(f"  [bold]label[/bold]        {s.label or '[dim]—[/dim]'}")
+    console.print("  [bold]state[/bold]        ", end="")
+    console.print(state_display)
+    console.print(f"  [bold]host[/bold]         {s.host or '[dim]—[/dim]'}")
+    console.print(f"  [bold]cwd[/bold]          {_compact_cwd(s.cwd) if s.cwd else '[dim]—[/dim]'}")
+    console.print(f"  [bold]repo_root[/bold]    {s.repo_root or '[dim]—[/dim]'}")
+    console.print(f"  [bold]branch[/bold]       {s.branch or '[dim]—[/dim]'}")
+    tmux = f"{s.tmux_session or '—'}:{s.tmux_window or '—'}:{s.tmux_pane or '—'}"
+    console.print(f"  [bold]tmux[/bold]         {tmux}")
+    console.print(f"  [bold]pid[/bold]          {s.pid or '[dim]—[/dim]'}")
+    console.print(f"  [bold]managed[/bold]      {'yes' if s.is_managed else 'no'}")
+    console.print(f"  [bold]summary[/bold]      {s.summary or '[dim]—[/dim]'}")
+    console.print(f"  [bold]created[/bold]      {_relative_time(s.created_at)}")
+    console.print(f"  [bold]updated[/bold]      {_relative_time(s.updated_at)}")
+    console.print(f"  [bold]last_seen[/bold]    {_relative_time(s.last_seen_at)}")
+    console.print(
+        f"  [bold]archived_at[/bold]  {s.archived_at or '[dim]—[/dim]'}"
+    )
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
@@ -120,7 +248,6 @@ def default_callback(
         typer.echo(f"agi {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        # No subcommand → default to list.
         cmd_list(all=False)
 
 
@@ -131,7 +258,7 @@ def cmd_list(
     """List active sessions."""
     conn = get_connection()
     sessions = list_sessions(conn, include_done=all, include_archived=all)
-    typer.echo(_format_table(sessions))
+    _print_table(sessions)
 
 
 @app.command("waiting")
@@ -139,21 +266,25 @@ def cmd_waiting() -> None:
     """Show sessions waiting for user input."""
     conn = get_connection()
     sessions = list_waiting(conn)
-    typer.echo(_format_table(sessions))
+    _print_table(sessions)
 
 
 @app.command("show")
 def cmd_show(query: str) -> None:
     """Show full details for a session. Matches against id, label, cwd, or pid."""
     s = _resolve(query)
-    typer.echo(_format_detail(s))
+    _print_detail(s)
 
     conn = get_connection()
     events = list_events(conn, s.id)
     if events:
-        typer.echo(f"\n  Events ({len(events)}):")
+        console.print(f"\n  [bold]Events ({len(events)}):[/bold]")
         for e in events:
-            typer.echo(f"    {e.created_at}  {e.event_type}  {e.payload_json or ''}")
+            console.print(
+                f"    [dim]{_relative_time(e.created_at):>8}[/dim]  {e.event_type}"
+                f"  [dim]{e.payload_json or ''}[/dim]"
+            )
+    console.print()
 
 
 @app.command("register")
@@ -177,7 +308,7 @@ def cmd_register(
     try:
         SessionState(state)
     except ValueError:
-        typer.echo(f"Invalid state: {state}", err=True)
+        console.print(f"[red]Invalid state:[/red] {state}")
         raise typer.Exit(1)
 
     session = Session(
@@ -196,7 +327,7 @@ def cmd_register(
     )
     conn = get_connection()
     register_session(conn, session)
-    typer.echo(f"Registered session: {session_id}")
+    console.print(f"Registered session: [cyan]{session_id}[/cyan]")
 
 
 @app.command("update-state")
@@ -206,13 +337,13 @@ def cmd_update_state(query: str, state: str) -> None:
         SessionState(state)
     except ValueError:
         valid = ", ".join(s.value for s in SessionState)
-        typer.echo(f"Invalid state: {state}\nValid states: {valid}", err=True)
+        console.print(f"[red]Invalid state:[/red] {state}\nValid: {valid}")
         raise typer.Exit(1)
 
     s = _resolve(query)
     conn = get_connection()
     update_state(conn, s.id, state)
-    typer.echo(f"State updated: {_short_id(s.id)} → {state}")
+    console.print(f"State updated: [cyan]{_short_id(s.id)}[/cyan] → {state}")
 
 
 @app.command("rename")
@@ -221,7 +352,23 @@ def cmd_rename(query: str, label: str) -> None:
     s = _resolve(query)
     conn = get_connection()
     rename_session(conn, s.id, label)
-    typer.echo(f"Renamed: {_short_id(s.id)} → {label}")
+    console.print(f"Renamed: [cyan]{_short_id(s.id)}[/cyan] → {label}")
+
+
+@app.command("label")
+def cmd_label(label: str) -> None:
+    """Set label for the current session (auto-detects by process tree)."""
+    import os
+
+    from agent_interface.hooks import _find_by_pid_ancestry
+
+    conn = get_connection()
+    match = _find_by_pid_ancestry(conn, os.getpid())
+    if match is None:
+        console.print("[red]Could not find a session for this process.[/red]", highlight=False)
+        raise typer.Exit(1)
+    rename_session(conn, match.id, label)
+    console.print(f"Labeled: [cyan]{_short_id(match.id)}[/cyan] → {label}")
 
 
 @app.command("archive")
@@ -230,7 +377,7 @@ def cmd_archive(query: str) -> None:
     s = _resolve(query)
     conn = get_connection()
     archive_session(conn, s.id)
-    typer.echo(f"Archived: {_short_id(s.id)}")
+    console.print(f"Archived: [cyan]{_short_id(s.id)}[/cyan]")
 
 
 @app.command("restore")
@@ -239,7 +386,7 @@ def cmd_restore(query: str) -> None:
     s = _resolve(query)
     conn = get_connection()
     restore_session(conn, s.id)
-    typer.echo(f"Restored: {_short_id(s.id)}")
+    console.print(f"Restored: [cyan]{_short_id(s.id)}[/cyan]")
 
 
 @app.command("hook", hidden=True)
@@ -248,8 +395,6 @@ def cmd_hook() -> None:
     from agent_interface.hooks import read_and_process_stdin
 
     result = read_and_process_stdin()
-    # Silent by default — hooks shouldn't produce visible output.
-    # Write to stderr only on error for debugging.
     if result.startswith("error:"):
         typer.echo(result, err=True)
         raise typer.Exit(1)
@@ -261,7 +406,7 @@ def cmd_init_hooks() -> None:
     from agent_interface.hooks import install_hooks
 
     ok, msg = install_hooks()
-    typer.echo(msg)
+    console.print(msg)
     if not ok:
         raise typer.Exit(1)
 
@@ -274,10 +419,10 @@ def cmd_scan() -> None:
     hooks_ok, results = scan_and_register()
 
     if hooks_ok:
-        typer.echo("Hooks installed into ~/.claude/settings.json")
+        console.print("[green]Hooks installed[/green] into ~/.claude/settings.json")
 
     if not results:
-        typer.echo("No agent sessions found.")
+        console.print("[dim]No agent sessions found.[/dim]")
         return
 
     registered = [(a, p) for a, p in results if a == "registered"]
@@ -286,15 +431,16 @@ def cmd_scan() -> None:
     for _, proc in registered:
         tmux = ""
         if proc.tmux_session:
-            tmux = f" (tmux {proc.tmux_session}:{proc.tmux_window}.{proc.tmux_pane})"
-        typer.echo(f"  + {proc.pid}  {proc.cwd or '?'}{tmux}")
+            tmux = f" [dim](tmux {proc.tmux_session}:{proc.tmux_window}.{proc.tmux_pane})[/dim]"
+        cwd = _compact_cwd(proc.cwd) if proc.cwd else "?"
+        console.print(f"  [green]+[/green] [cyan]{proc.pid}[/cyan]  {cwd}{tmux}")
 
     if registered:
-        typer.echo(f"\nRegistered {len(registered)} new session(s).")
+        console.print(f"\nRegistered {len(registered)} new session(s).")
     if skipped:
-        typer.echo(f"Skipped {len(skipped)} already tracked.")
+        console.print(f"[dim]Skipped {len(skipped)} already tracked.[/dim]")
     if not registered and skipped:
-        typer.echo("All found sessions are already tracked.")
+        console.print("[dim]All found sessions are already tracked.[/dim]")
 
 
 def main() -> None:

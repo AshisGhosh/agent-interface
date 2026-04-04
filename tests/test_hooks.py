@@ -25,11 +25,13 @@ def conn(tmp_path, monkeypatch):
 
 @pytest.fixture
 def settings_dir(tmp_path, monkeypatch):
-    """Redirect settings to a temp dir."""
+    """Redirect settings and CLAUDE.md to a temp dir."""
     import agent_interface.hooks as hooks_mod
 
     fake_path = tmp_path / ".claude" / "settings.json"
+    fake_claude_md = tmp_path / ".claude" / "CLAUDE.md"
     monkeypatch.setattr(hooks_mod, "SETTINGS_PATH", fake_path)
+    monkeypatch.setattr(hooks_mod, "CLAUDE_MD_PATH", fake_claude_md)
     return fake_path
 
 
@@ -51,11 +53,17 @@ def test_install_hooks_fresh(settings_dir):
     ok, msg = install_hooks()
     assert ok
     assert "installed" in msg.lower()
+    assert "claude.md" in msg.lower()
 
     settings = json.loads(settings_dir.read_text())
     assert "hooks" in settings
     for event in HOOK_EVENTS:
         assert event in settings["hooks"]
+
+    # CLAUDE.md should have the instruction.
+    claude_md = settings_dir.parent / "CLAUDE.md"
+    assert claude_md.exists()
+    assert "agi label" in claude_md.read_text()
 
 
 def test_install_hooks_preserves_other_settings(settings_dir):
@@ -226,3 +234,60 @@ def test_adopt_scan_registered_session(conn, monkeypatch):
     assert s is not None
     assert s.state == "waiting_for_user"
     assert s.pid == my_pid
+
+
+# ── auto-labeling from user prompt ───────────────────────────────────────────
+
+
+def test_user_prompt_sets_label(conn):
+    register_session(conn, Session(id="abc123", state="running"))
+
+    result = process_hook({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "abc123",
+        "prompt": "fix the retry logic in the scoring pipeline",
+    })
+    assert "labeled" in result
+
+    s = get_session(conn, "abc123")
+    assert s.label == "fix the retry logic in the scoring pipeline"
+
+
+def test_user_prompt_does_not_overwrite_existing_label(conn):
+    register_session(conn, Session(id="abc123", state="running", label="my-task"))
+
+    result = process_hook({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "abc123",
+        "prompt": "some new prompt",
+    })
+    assert "skipped" in result
+
+    s = get_session(conn, "abc123")
+    assert s.label == "my-task"
+
+
+def test_user_prompt_truncates_long_text(conn):
+    register_session(conn, Session(id="abc123", state="running"))
+
+    long_prompt = "a " * 100  # 200 chars
+    result = process_hook({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "abc123",
+        "prompt": long_prompt,
+    })
+    assert "labeled" in result
+
+    s = get_session(conn, "abc123")
+    assert len(s.label) <= 60
+
+
+def test_user_prompt_empty_ignored(conn):
+    register_session(conn, Session(id="abc123", state="running"))
+
+    result = process_hook({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "abc123",
+        "prompt": "  ",
+    })
+    assert "ignored" in result
