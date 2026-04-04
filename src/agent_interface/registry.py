@@ -121,11 +121,12 @@ def find_session(conn: sqlite3.Connection, query: str) -> list[Session]:
     if row is not None:
         return [_maybe_reap(conn, _row_to_session(row))]
 
-    # Search across fields with LIKE.
+    # Search across fields with LIKE, excluding archived.
     pattern = f"%{query}%"
     rows = conn.execute(
         """SELECT * FROM sessions
-           WHERE id LIKE ? OR label LIKE ? OR cwd LIKE ? OR CAST(pid AS TEXT) = ?
+           WHERE (id LIKE ? OR label LIKE ? OR cwd LIKE ? OR CAST(pid AS TEXT) = ?)
+             AND state != 'archived'
            ORDER BY updated_at DESC""",
         (pattern, pattern, pattern, query),
     ).fetchall()

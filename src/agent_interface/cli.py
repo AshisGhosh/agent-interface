@@ -250,6 +250,14 @@ def default_callback(
     if version:
         typer.echo(f"agi {__version__}")
         raise typer.Exit()
+
+    # Ensure the Telegram bot is running (if configured).
+    from agent_interface.telegram import ensure_bot_running
+    try:
+        ensure_bot_running()
+    except Exception:
+        pass  # Best-effort.
+
     if ctx.invoked_subcommand is None:
         cmd_list(all=False)
 
@@ -408,6 +416,41 @@ def cmd_restore(query: str) -> None:
     console.print(f"Restored: [cyan]{_short_id(s.id)}[/cyan]")
 
 
+@app.command("jump")
+def cmd_jump(query: str) -> None:
+    """Jump to a session's tmux pane."""
+    import shutil
+    import subprocess
+
+    s = _resolve(query)
+
+    if not s.tmux_session:
+        console.print("[red]No tmux metadata for this session.[/red]", highlight=False)
+        raise typer.Exit(1)
+
+    if not shutil.which("tmux"):
+        console.print("[red]tmux not found.[/red]", highlight=False)
+        raise typer.Exit(1)
+
+    target = f"{s.tmux_session}:{s.tmux_window}.{s.tmux_pane}"
+
+    # Detect if we're inside tmux.
+    in_tmux = os.environ.get("TMUX")
+
+    if in_tmux:
+        subprocess.run(["tmux", "switch-client", "-t", target], check=False)
+    else:
+        subprocess.run(["tmux", "attach", "-t", target], check=False)
+
+    # Zoom only if not already zoomed.
+    zoomed = subprocess.run(
+        ["tmux", "display-message", "-t", target, "-p", "#{window_zoomed_flag}"],
+        capture_output=True, text=True, check=False,
+    )
+    if zoomed.stdout.strip() != "1":
+        subprocess.run(["tmux", "resize-pane", "-Z", "-t", target], check=False)
+
+
 @app.command("hook", hidden=True)
 def cmd_hook() -> None:
     """Process a hook event from stdin (called by agent hooks)."""
@@ -428,6 +471,13 @@ def cmd_init_hooks() -> None:
     console.print(msg)
     if not ok:
         raise typer.Exit(1)
+
+    # Register Telegram bot commands if configured.
+    try:
+        from agent_interface.telegram import register_commands
+        register_commands()
+    except Exception:
+        pass
 
 
 @app.command("scan")
@@ -460,6 +510,76 @@ def cmd_scan() -> None:
         console.print(f"[dim]Skipped {len(skipped)} already tracked.[/dim]")
     if not registered and skipped:
         console.print("[dim]All found sessions are already tracked.[/dim]")
+
+
+@app.command("bot")
+def cmd_bot(
+    foreground: bool = typer.Option(False, "--fg", help="Run in foreground."),
+) -> None:
+    """Start the Telegram bot."""
+    from agent_interface.telegram import (
+        _bot_pid_alive,
+        ensure_bot_running,
+        poll_and_reply,
+        send_message,
+    )
+
+    if foreground:
+        console.print("Starting Telegram bot in foreground... (Ctrl+C to stop)")
+        try:
+            send_message("agi bot started. Send /help for commands.")
+            poll_and_reply()
+        except KeyboardInterrupt:
+            console.print("\nBot stopped.")
+        return
+
+    if _bot_pid_alive():
+        console.print("[dim]Bot is already running.[/dim]")
+        return
+
+    ensure_bot_running()
+    console.print("[green]Bot started in background.[/green]")
+
+
+@app.command("bot-stop")
+def cmd_bot_stop() -> None:
+    """Stop the background Telegram bot."""
+    from agent_interface.telegram import stop_bot
+
+    if stop_bot():
+        console.print("Bot stopped.")
+    else:
+        console.print("[dim]Bot is not running.[/dim]")
+
+
+@app.command("notify-test")
+def cmd_notify_test() -> None:
+    """Send a test notification to Telegram."""
+    from agent_interface.telegram import send_message
+
+    ok = send_message("Test notification from agi.")
+    if ok:
+        console.print("[green]Notification sent.[/green]")
+    else:
+        console.print("[red]Failed. Check ~/.config/agi/config.json[/red]")
+
+
+@app.command("dashboard")
+def cmd_dashboard() -> None:
+    """Update the pinned Telegram dashboard."""
+    from agent_interface.telegram import (
+        _load_dashboard_state,
+        _save_dashboard_state,
+        update_dashboard,
+    )
+    state = _load_dashboard_state()
+    state["last_updated"] = 0
+    _save_dashboard_state(state)
+
+    if update_dashboard():
+        console.print("[green]Dashboard updated.[/green]")
+    else:
+        console.print("[red]Failed. Check Telegram config.[/red]")
 
 
 def main() -> None:

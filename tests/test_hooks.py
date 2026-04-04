@@ -261,7 +261,7 @@ def test_user_prompt_does_not_overwrite_existing_label(conn):
         "session_id": "abc123",
         "prompt": "some new prompt",
     })
-    assert "skipped" in result
+    assert "running" in result
 
     s = get_session(conn, "abc123")
     assert s.label == "my-task"
@@ -282,12 +282,15 @@ def test_user_prompt_truncates_long_text(conn):
     assert len(s.label) <= 60
 
 
-def test_user_prompt_empty_ignored(conn):
-    register_session(conn, Session(id="abc123", state="running"))
+def test_user_prompt_empty_sets_running(conn):
+    register_session(conn, Session(id="abc123", state="waiting_for_user"))
 
     result = process_hook({
         "hook_event_name": "UserPromptSubmit",
         "session_id": "abc123",
         "prompt": "  ",
     })
-    assert "ignored" in result
+    assert "running" in result
+
+    s = get_session(conn, "abc123")
+    assert s.state == "running"

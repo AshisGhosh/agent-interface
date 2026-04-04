@@ -218,6 +218,15 @@ def scan_and_register() -> tuple[bool, list[tuple[str, ProcessInfo]]]:
 
     for proc in processes:
         if proc.pid in existing_pids:
+            # Refresh tmux metadata for existing sessions.
+            if proc.tmux_session is not None:
+                conn.execute(
+                    """UPDATE sessions
+                       SET tmux_session=?, tmux_window=?, tmux_pane=?
+                       WHERE pid=?""",
+                    (proc.tmux_session, proc.tmux_window, proc.tmux_pane, proc.pid),
+                )
+                conn.commit()
             results.append(("skipped", proc))
             continue
 

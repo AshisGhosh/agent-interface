@@ -175,22 +175,72 @@ def _truncate_label(text: str) -> str:
 
 
 def _handle_prompt_label(session_id: str, prompt: str) -> str:
-    """Set the session label from the first user prompt, if not already set."""
-    if not prompt.strip():
-        return "ignored: empty prompt"
-
+    """Set state to running and label from first user prompt."""
     conn = get_connection()
     existing = get_session(conn, session_id)
     if existing is None:
-        return "ignored: session not found for label"
+        return "ignored: session not found"
+
+    # User just submitted input — session is now running.
+    if existing.state != SessionState.RUNNING.value:
+        update_state(conn, session_id, SessionState.RUNNING.value)
+
+    if not prompt.strip():
+        return "running: empty prompt"
 
     # Don't overwrite an existing label.
     if existing.label:
-        return f"skipped: label already set for {session_id}"
+        return f"running: label already set for {session_id}"
 
     label = _truncate_label(prompt)
     rename_session(conn, session_id, label)
     return f"labeled: {session_id} → {label}"
+
+
+_LAST_NOTIFY_PATH = Path.home() / ".config" / "agi" / "last_notify.json"
+
+
+def _try_notify(session_id: str, transcript_path: str | None) -> None:
+    """Send a Telegram notification if configured. Best-effort, never fails."""
+    try:
+        import time
+
+        # Small delay to let the transcript flush to disk.
+        time.sleep(1)
+
+        from agent_interface.telegram import _read_last_agent_message, notify_waiting
+
+        last_msg = None
+        if transcript_path:
+            last_msg = _read_last_agent_message(transcript_path)
+
+        # Dedup by content: skip if we'd send the exact same message again.
+        msg_key = f"{session_id}:{(last_msg or '')[-200:]}"
+        last_sent: dict[str, str] = {}
+        if _LAST_NOTIFY_PATH.exists():
+            try:
+                last_sent = json.loads(_LAST_NOTIFY_PATH.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if last_sent.get(session_id) == msg_key:
+            return
+
+        if notify_waiting(session_id, last_msg):
+            last_sent[session_id] = msg_key
+            _LAST_NOTIFY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _LAST_NOTIFY_PATH.write_text(json.dumps(last_sent))
+    except Exception:
+        pass  # Notifications are best-effort.
+
+
+def _try_update_dashboard() -> None:
+    """Update the pinned dashboard. Best-effort."""
+    try:
+        from agent_interface.telegram import update_dashboard
+        update_dashboard()
+    except Exception:
+        pass
 
 
 def process_hook(payload: dict) -> str:
@@ -235,6 +285,8 @@ def process_hook(payload: dict) -> str:
         )
         conn.execute("PRAGMA foreign_keys=ON")
         conn.commit()
+        if event_name == "Stop":
+            _try_notify(session_id, payload.get("transcript_path"))
         return f"adopted: {scan_match.id} → {session_id} ({target_state.value})"
 
     existing = get_session(conn, session_id)
@@ -249,6 +301,8 @@ def process_hook(payload: dict) -> str:
             pid=pid,
         )
         register_session(conn, session)
+        if event_name == "Stop":
+            _try_notify(session_id, payload.get("transcript_path"))
         return f"registered: {session_id} ({target_state.value})"
 
     # For heartbeat-only events, just touch last_seen_at if already running.
@@ -263,6 +317,12 @@ def process_hook(payload: dict) -> str:
 
     # Update state.
     update_state(conn, session_id, target_state.value)
+
+    # Notify on Stop — the agent just finished a response.
+    # Deduplicate: skip if we already notified for this session recently.
+    if event_name == "Stop":
+        _try_notify(session_id, payload.get("transcript_path"))
+
     return f"updated: {session_id} → {target_state.value}"
 
 
@@ -275,4 +335,6 @@ def read_and_process_stdin() -> str:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         return "error: invalid JSON on stdin"
-    return process_hook(payload)
+    result = process_hook(payload)
+    _try_update_dashboard()
+    return result
