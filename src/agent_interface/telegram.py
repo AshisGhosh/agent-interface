@@ -609,6 +609,47 @@ def _handle_at_reply(text: str) -> None:
         send_message(f"✗ Failed: {debug}")
 
 
+def _send_session_cards(sessions: list) -> None:
+    """Send a Telegram card for each session with context."""
+    state_emoji = {
+        "running": "🟢", "waiting_for_user": "🟡",
+        "blocked": "🔴", "tests_failed": "🔴",
+        "done": "⚫", "idle": "⚪",
+    }
+
+    for s in sessions:
+        emoji = state_emoji.get(s.state, "⚪")
+        label = s.label or (
+            _compact_cwd(s.cwd).rsplit("/", 1)[-1] if s.cwd else "session"
+        )
+        cwd = _compact_cwd(s.cwd) if s.cwd else "?"
+
+        lines = [f"{emoji} <b>{label}</b>"]
+        lines.append(f"<code>{cwd}</code>")
+
+        # Tool activity.
+        if s.last_tool and s.tool_count:
+            lines.append(f"📝 {s.last_tool} · {s.tool_count} calls")
+
+        # Last agent message.
+        last = get_last_message_for_session(s.id)
+        if last:
+            snippet = "…" + last[-2000:] if len(last) > 2000 else last
+            formatted = _format_agent_message(snippet)
+            lines.append(f"\n<blockquote>{formatted}</blockquote>")
+
+        # Reply button for waiting sessions.
+        reply_markup = None
+        if s.state == "waiting_for_user":
+            reply_markup = {
+                "inline_keyboard": [[
+                    {"text": "💬 Reply", "callback_data": f"reply:{s.id}"},
+                ]]
+            }
+
+        send_message("\n".join(lines), reply_markup=reply_markup)
+
+
 def _handle_command(token: str, chat_id: int, text: str) -> None:
     """Handle bot commands."""
     cmd = text.split()[0].lower()
@@ -619,32 +660,7 @@ def _handle_command(token: str, chat_id: int, text: str) -> None:
         if not sessions:
             send_message("No active sessions.")
             return
-
-        state_emoji = {
-            "running": "🟢", "waiting_for_user": "🟡",
-            "blocked": "🔴", "tests_failed": "🔴",
-            "done": "⚫", "idle": "⚪",
-        }
-
-        # Group by cwd.
-        groups: dict[str, list] = {}
-        for s in sessions:
-            cwd = _compact_cwd(s.cwd) if s.cwd else "?"
-            groups.setdefault(cwd, []).append(s)
-
-        lines = []
-        for cwd, group in groups.items():
-            lines.append(f"\n<b>{cwd}</b>")
-            for s in group:
-                emoji = state_emoji.get(s.state, "⚪")
-                label = s.label or "unlabeled"
-                detail = ""
-                if s.state == "running" and s.last_tool:
-                    detail = f" — {s.last_tool} ({s.tool_count})"
-                elif s.state == "waiting_for_user":
-                    detail = " ⏳"
-                lines.append(f"  {emoji} {label}{detail}")
-        send_message("\n".join(lines))
+        _send_session_cards(sessions)
 
     elif cmd == "/waiting":
         conn = get_connection()
@@ -652,29 +668,29 @@ def _handle_command(token: str, chat_id: int, text: str) -> None:
         if not sessions:
             send_message("No sessions waiting.")
             return
-        for s in sessions:
-            label = s.label or _compact_cwd(s.cwd).rsplit("/", 1)[-1] if s.cwd else "session"
-            last = get_last_message_for_session(s.id)
-            lines = [f"🟡 <b>{label}</b>"]
-            cwd = _compact_cwd(s.cwd) if s.cwd else "?"
-            lines.append(f"<code>{cwd}</code>")
-            if last:
-                snippet = "…" + last[-3500:] if len(last) > 3500 else last
-                formatted = _format_agent_message(snippet)
-                lines.append(f"\n<blockquote>{formatted}</blockquote>")
+        _send_session_cards(sessions)
 
-            reply_markup = {
-                "inline_keyboard": [[
-                    {"text": "💬 Reply", "callback_data": f"reply:{s.id}"},
-                ]]
-            }
-            send_message("\n".join(lines), reply_markup=reply_markup)
+    elif cmd.startswith("/peek"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            send_message("Usage: /peek session_query")
+            return
+        conn = get_connection()
+        matches = find_session(conn, parts[1])
+        if not matches:
+            send_message(f"No session matching: {parts[1]}")
+        elif len(matches) > 1:
+            labels = [f"• {s.label or s.id}" for s in matches[:5]]
+            send_message("Ambiguous:\n" + "\n".join(labels))
+        else:
+            _send_session_cards(matches)
 
     elif cmd == "/help":
         send_message(
             "<b>Commands:</b>\n"
-            "/list — show active sessions\n"
+            "/list — show all active sessions with context\n"
             "/waiting — show sessions needing input\n"
+            "/peek &lt;query&gt; — show details for one session\n"
             "/help — this message\n\n"
             "<b>Reply:</b>\n"
             "• Tap 💬 Reply on a notification\n"
@@ -734,8 +750,9 @@ def register_commands() -> None:
         return
     _api(token, "setMyCommands", {
         "commands": [
-            {"command": "list", "description": "Show active sessions"},
+            {"command": "list", "description": "Show all sessions with context"},
             {"command": "waiting", "description": "Show sessions needing input"},
+            {"command": "peek", "description": "Peek at a specific session"},
             {"command": "help", "description": "Show help"},
         ]
     })
