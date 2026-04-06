@@ -58,4 +58,14 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA_SQL)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns that may not exist in older databases."""
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "last_tool" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN last_tool TEXT")
+    if "tool_count" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN tool_count INTEGER NOT NULL DEFAULT 0")

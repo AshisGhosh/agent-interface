@@ -27,6 +27,8 @@ class Session:
     pid: Optional[int] = None
     is_managed: bool = False
     summary: Optional[str] = None
+    last_tool: Optional[str] = None
+    tool_count: int = 0
     created_at: str = field(default_factory=_now_utc)
     updated_at: str = field(default_factory=_now_utc)
     last_seen_at: str = field(default_factory=_now_utc)

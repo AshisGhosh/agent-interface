@@ -185,8 +185,9 @@ def _print_table(sessions: list[Session]) -> None:
 
         table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1, 0, 2))
         table.add_column("PID", style="cyan", no_wrap=True)
-        table.add_column("LABEL", max_width=45, overflow="ellipsis")
+        table.add_column("LABEL", max_width=40, overflow="ellipsis")
         table.add_column("STATE", no_wrap=True)
+        table.add_column("ACTIVITY", style="dim", no_wrap=True, max_width=25)
         table.add_column("UPDATED", justify="right", no_wrap=True)
         table.add_column("TMUX", style="dim", no_wrap=True, justify="right")
 
@@ -197,6 +198,13 @@ def _print_table(sessions: list[Session]) -> None:
             label = s.label or "—"
             updated = _relative_time(s.updated_at)
 
+            # Activity: show last tool + count for running sessions.
+            activity = ""
+            if s.state == "running" and s.last_tool:
+                activity = f"{s.last_tool} ({s.tool_count})"
+            elif s.state == "running" and s.tool_count:
+                activity = f"{s.tool_count} tools"
+
             row_style = ""
             if s.state in ("done", "archived") or stale:
                 row_style = "dim"
@@ -205,6 +213,7 @@ def _print_table(sessions: list[Session]) -> None:
                 pid,
                 label,
                 _state_text(s.state, stale),
+                activity,
                 updated,
                 tmux,
                 style=row_style,
@@ -230,6 +239,8 @@ def _print_detail(s: Session) -> None:
     console.print(f"  [bold]tmux[/bold]         {tmux}")
     console.print(f"  [bold]pid[/bold]          {s.pid or '[dim]—[/dim]'}")
     console.print(f"  [bold]managed[/bold]      {'yes' if s.is_managed else 'no'}")
+    tool_info = f"{s.last_tool} ({s.tool_count} calls)" if s.last_tool else f"{s.tool_count} calls"
+    console.print(f"  [bold]tools[/bold]        {tool_info}")
     console.print(f"  [bold]summary[/bold]      {s.summary or '[dim]—[/dim]'}")
     console.print(f"  [bold]created[/bold]      {_relative_time(s.created_at)}")
     console.print(f"  [bold]updated[/bold]      {_relative_time(s.updated_at)}")

@@ -109,6 +109,10 @@ def notify_waiting(session_id: str, last_message: str | None = None) -> bool:
     lines = [f"⏳ <b>{label}</b>"]
     lines.append(f"<code>{cwd}</code>")
 
+    # Show what the agent was doing before it stopped.
+    if s.last_tool and s.tool_count:
+        lines.append(f"📝 {s.tool_count} tool calls · last: {s.last_tool}")
+
     if last_message:
         if len(last_message) > 3500:
             last_message = "…" + last_message[-3500:]
@@ -176,17 +180,26 @@ def _build_dashboard_text() -> str:
         if is_stale(s):
             emoji = "⏸"
         label = s.label or (_compact_cwd(s.cwd).rsplit("/", 1)[-1] if s.cwd else "?")
-        # Get a short context snippet.
-        snippet = ""
-        last = get_last_message_for_session(s.id)
-        if last:
-            # Take last line that's not empty, truncated.
-            for ln in reversed(last.strip().splitlines()):
-                if ln.strip():
-                    snippet = ln.strip()[:80]
-                    break
-        if snippet:
-            return f"  {emoji} <b>{label}</b>\n       <i>{snippet}</i>"
+
+        # For running: show tool activity.
+        if s.state == SessionState.RUNNING and s.last_tool:
+            return (
+                f"  {emoji} <b>{label}</b>\n"
+                f"       <i>{s.last_tool} · {s.tool_count} calls</i>"
+            )
+
+        # For waiting: show last agent message.
+        if s.state == SessionState.WAITING_FOR_USER:
+            snippet = ""
+            last = get_last_message_for_session(s.id)
+            if last:
+                for ln in reversed(last.strip().splitlines()):
+                    if ln.strip():
+                        snippet = ln.strip()[:80]
+                        break
+            if snippet:
+                return f"  {emoji} <b>{label}</b>\n       <i>{snippet}</i>"
+
         return f"  {emoji} <b>{label}</b>"
 
     if waiting:
@@ -625,7 +638,12 @@ def _handle_command(token: str, chat_id: int, text: str) -> None:
             for s in group:
                 emoji = state_emoji.get(s.state, "⚪")
                 label = s.label or "unlabeled"
-                lines.append(f"  {emoji} {label}")
+                detail = ""
+                if s.state == "running" and s.last_tool:
+                    detail = f" — {s.last_tool} ({s.tool_count})"
+                elif s.state == "waiting_for_user":
+                    detail = " ⏳"
+                lines.append(f"  {emoji} {label}{detail}")
         send_message("\n".join(lines))
 
     elif cmd == "/waiting":

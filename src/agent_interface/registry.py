@@ -29,6 +29,8 @@ def _row_to_session(row: sqlite3.Row) -> Session:
         is_managed=bool(row["is_managed"]),
         state=row["state"],
         summary=row["summary"],
+        last_tool=row["last_tool"],
+        tool_count=row["tool_count"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         last_seen_at=row["last_seen_at"],
@@ -93,15 +95,15 @@ def register_session(conn: sqlite3.Connection, session: Session) -> Session:
         """INSERT INTO sessions
            (id, label, host, cwd, repo_root, branch,
             tmux_session, tmux_window, tmux_pane, worktree_path,
-            pid, is_managed, state, summary,
+            pid, is_managed, state, summary, last_tool, tool_count,
             created_at, updated_at, last_seen_at, archived_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             session.id, session.label, session.host, session.cwd,
             session.repo_root, session.branch,
             session.tmux_session, session.tmux_window, session.tmux_pane,
             session.worktree_path, session.pid, int(session.is_managed),
-            session.state, session.summary,
+            session.state, session.summary, session.last_tool, session.tool_count,
             session.created_at, session.updated_at, session.last_seen_at,
             session.archived_at,
         ),

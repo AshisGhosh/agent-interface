@@ -181,9 +181,14 @@ def _handle_prompt_label(session_id: str, prompt: str) -> str:
     if existing is None:
         return "ignored: session not found"
 
-    # User just submitted input — session is now running.
+    # User just submitted input — session is now running. Reset tool count.
     if existing.state != SessionState.RUNNING.value:
         update_state(conn, session_id, SessionState.RUNNING.value)
+        conn.execute(
+            "UPDATE sessions SET tool_count=0, last_tool=NULL WHERE id=?",
+            (session_id,),
+        )
+        conn.commit()
 
     if not prompt.strip():
         return "running: empty prompt"
@@ -305,15 +310,18 @@ def process_hook(payload: dict) -> str:
             _try_notify(session_id, payload.get("transcript_path"))
         return f"registered: {session_id} ({target_state.value})"
 
-    # For heartbeat-only events, just touch last_seen_at if already running.
+    # For heartbeat-only events, update last_seen + tool info.
     if event_name in HEARTBEAT_ONLY_EVENTS and existing.state == SessionState.RUNNING.value:
         now = _now_utc()
+        tool_name = payload.get("tool_name", "")
         conn.execute(
-            "UPDATE sessions SET last_seen_at=?, updated_at=? WHERE id=?",
-            (now, now, session_id),
+            """UPDATE sessions
+               SET last_seen_at=?, updated_at=?, last_tool=?, tool_count=tool_count+1
+               WHERE id=?""",
+            (now, now, tool_name or existing.last_tool, session_id),
         )
         conn.commit()
-        return f"heartbeat: {session_id}"
+        return f"heartbeat: {session_id} ({tool_name})"
 
     # Update state.
     update_state(conn, session_id, target_state.value)
