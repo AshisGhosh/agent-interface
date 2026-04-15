@@ -45,12 +45,16 @@ def _api(token: str, method: str, data: dict, timeout: int = 15) -> dict:
 
 
 def send_message(text: str, reply_markup: dict | None = None) -> bool:
-    """Send a message to the configured Telegram chat."""
+    """Send a single message to the configured Telegram chat (max 4096 chars)."""
     config = _load_config()
     token = config.get("telegram_bot_token")
     chat_id = config.get("telegram_chat_id")
     if not token or not chat_id:
         return False
+
+    # Telegram limit is 4096 chars — truncate if needed for single messages.
+    if len(text) > 4096:
+        text = text[:4093] + "…"
 
     data: dict[str, Any] = {
         "chat_id": chat_id,
@@ -69,6 +73,40 @@ def send_message(text: str, reply_markup: dict | None = None) -> bool:
     data.pop("reply_markup", None)
     result = _api(token, "sendMessage", data)
     return result.get("ok", False)
+
+
+def _send_long_message(text: str, reply_markup: dict | None = None) -> bool:
+    """Send a message, splitting into multiple if it exceeds 4096 chars.
+
+    The reply_markup (buttons) is attached to the last chunk.
+    """
+    if len(text) <= 4096:
+        return send_message(text, reply_markup=reply_markup)
+
+    # Split on line boundaries.
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in text.split("\n"):
+        line_len = len(line) + 1  # +1 for newline
+        if current_len + line_len > 4000 and current:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += line_len
+
+    if current:
+        chunks.append("\n".join(current))
+
+    # Send all chunks. Buttons on the last one.
+    ok = True
+    for i, chunk in enumerate(chunks):
+        is_last = i == len(chunks) - 1
+        ok = send_message(chunk, reply_markup=reply_markup if is_last else None) and ok
+
+    return ok
 
 
 def _compact_cwd(cwd: str) -> str:
@@ -114,21 +152,16 @@ def notify_waiting(session_id: str, last_message: str | None = None) -> bool:
         lines.append(f"📝 {s.tool_count} tool calls · last: {s.last_tool}")
 
     if last_message:
-        if len(last_message) > 3500:
-            last_message = "…" + last_message[-3500:]
         formatted = _format_agent_message(last_message)
         lines.append(f"\n<blockquote>{formatted}</blockquote>")
 
-    text = "\n".join(lines)
-
-    # Add reply button.
     reply_markup = {
         "inline_keyboard": [[
             {"text": "💬 Reply", "callback_data": f"reply:{session_id}"},
         ]]
     }
 
-    return send_message(text, reply_markup=reply_markup)
+    return _send_long_message("\n".join(lines), reply_markup=reply_markup)
 
 
 # ── pinned dashboard ─────────────────────────────────────────────────────────
@@ -634,8 +667,7 @@ def _send_session_cards(sessions: list) -> None:
         # Last agent message.
         last = get_last_message_for_session(s.id)
         if last:
-            snippet = "…" + last[-2000:] if len(last) > 2000 else last
-            formatted = _format_agent_message(snippet)
+            formatted = _format_agent_message(last)
             lines.append(f"\n<blockquote>{formatted}</blockquote>")
 
         # Reply button for waiting sessions.
@@ -647,7 +679,7 @@ def _send_session_cards(sessions: list) -> None:
                 ]]
             }
 
-        send_message("\n".join(lines), reply_markup=reply_markup)
+        _send_long_message("\n".join(lines), reply_markup=reply_markup)
 
 
 def _handle_command(token: str, chat_id: int, text: str) -> None:
