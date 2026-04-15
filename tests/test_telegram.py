@@ -54,7 +54,7 @@ def tg(tmp_path, monkeypatch):
 
 def test_format_agent_message_code_block(tg):
     result = tg._format_agent_message("before\n```python\nprint('hi')\n```\nafter")
-    assert "<pre><code>" in result
+    assert "<pre>" in result
     assert "print('hi')" in result
 
 
@@ -66,6 +66,20 @@ def test_format_agent_message_inline_code(tg):
 def test_format_agent_message_bold(tg):
     result = tg._format_agent_message("this is **important**")
     assert "<b>important</b>" in result
+
+
+def test_format_agent_message_html_escaped(tg):
+    result = tg._format_agent_message("a < b & c > d")
+    assert "&lt;" in result
+    assert "&amp;" in result
+    assert "&gt;" in result
+    assert "<" not in result.replace("&lt;", "").replace("<b>", "").replace("</b>", "")
+
+
+def test_format_agent_message_code_block_escapes_html(tg):
+    result = tg._format_agent_message("```\nif a < b:\n  print(a & b)\n```")
+    assert "&lt;" in result
+    assert "&amp;" in result
 
 
 def test_format_agent_message_plain(tg):

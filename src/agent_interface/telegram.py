@@ -68,7 +68,9 @@ def send_message(text: str, reply_markup: dict | None = None) -> bool:
     if result.get("ok"):
         return True
 
-    # HTML parse failed — retry without formatting.
+    # HTML parse failed — strip tags and retry as plain text.
+    import re as _re
+    data["text"] = _re.sub(r"<[^>]+>", "", text)
     data["parse_mode"] = ""
     data.pop("reply_markup", None)
     result = _api(token, "sendMessage", data)
@@ -116,21 +118,42 @@ def _compact_cwd(cwd: str) -> str:
     return cwd
 
 
+def _html_escape(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _format_agent_message(text: str) -> str:
-    """Format agent message for Telegram, detecting code blocks."""
-    # If the message contains code fences, convert to <pre> tags.
+    """Format agent message for Telegram with HTML.
+
+    Escapes HTML first, then applies markdown-like formatting.
+    """
     import re
-    # Replace ```lang\n...\n``` with <pre><code>...</code></pre>
-    text = re.sub(
-        r"```\w*\n(.*?)```",
-        r"<pre><code>\1</code></pre>",
-        text,
-        flags=re.DOTALL,
-    )
-    # Replace inline `code` with <code>code</code>
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-    # Replace **bold** with <b>bold</b>
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+    # Extract code blocks before escaping so we can handle them separately.
+    code_blocks: list[str] = []
+
+    def _save_code_block(m: re.Match) -> str:
+        code_blocks.append(m.group(1))
+        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
+
+    # Pull out fenced code blocks.
+    text = re.sub(r"```\w*\n(.*?)```", _save_code_block, text, flags=re.DOTALL)
+
+    # Escape HTML in the remaining text.
+    text = _html_escape(text)
+
+    # Escape HTML inside code blocks separately and restore them.
+    for i, block in enumerate(code_blocks):
+        escaped = _html_escape(block)
+        text = text.replace(f"\x00CODEBLOCK{i}\x00", f"<pre>{escaped}</pre>")
+
+    # Inline code — only match balanced backticks, no newlines.
+    text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
+
+    # Bold — only match balanced double asterisks within a line.
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", text)
+
     return text
 
 
