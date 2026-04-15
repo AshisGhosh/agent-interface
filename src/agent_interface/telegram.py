@@ -68,9 +68,11 @@ def send_message(text: str, reply_markup: dict | None = None) -> bool:
     if result.get("ok"):
         return True
 
-    # HTML parse failed — strip tags and retry as plain text.
+    # HTML parse failed — strip tags and unescape, retry as plain text.
     import re as _re
-    data["text"] = _re.sub(r"<[^>]+>", "", text)
+    plain = _re.sub(r"<[^>]+>", "", text)
+    plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    data["text"] = plain
     data["parse_mode"] = ""
     data.pop("reply_markup", None)
     result = _api(token, "sendMessage", data)
