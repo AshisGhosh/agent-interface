@@ -41,7 +41,8 @@ AGI_INSTRUCTION = f"""{AGI_INSTRUCTION_MARKER}
 ## Session labeling (agi)
 
 This machine uses `agi` to track coding agent sessions. When you start working on a task, \
-update your session label by running:
+update your session label. If you have the `label_session` MCP tool, use that. \
+Otherwise run:
   agi label "5-10 word summary of the task"
 
 Keep the summary short and descriptive. Update it if the focus of work changes significantly.
@@ -132,8 +133,36 @@ def _install_claude_md() -> str:
     return "CLAUDE.md instruction added."
 
 
+def _find_agi_command() -> list[str]:
+    """Resolve the agi command for MCP server config.
+
+    Prefers the globally-installed `agi` binary. Falls back to `uv run agi`
+    from the source directory.
+    """
+    import shutil
+
+    agi_path = shutil.which("agi")
+    if agi_path:
+        return [agi_path, "mcp"]
+
+    # Fallback: run from source.
+    src_dir = str(Path(__file__).resolve().parent.parent.parent)
+    return ["uv", "run", "--directory", src_dir, "agi", "mcp"]
+
+
+def _generate_mcp_config() -> dict:
+    """Generate the mcpServers entry for the agi MCP server."""
+    cmd = _find_agi_command()
+    return {
+        "agi": {
+            "command": cmd[0],
+            "args": cmd[1:],
+        }
+    }
+
+
 def install_hooks() -> tuple[bool, str]:
-    """Write hook config into ~/.claude/settings.json and CLAUDE.md instruction.
+    """Write hook config + MCP server into ~/.claude/settings.json and CLAUDE.md instruction.
 
     Merges with existing settings. Returns (success, message).
     """
@@ -146,6 +175,7 @@ def install_hooks() -> tuple[bool, str]:
         except (json.JSONDecodeError, OSError):
             settings = {}
 
+    # Install hooks.
     existing_hooks = settings.get("hooks", {})
     new_hooks = generate_hook_config()
 
@@ -154,11 +184,16 @@ def install_hooks() -> tuple[bool, str]:
     existing_hooks.update(new_hooks)
     settings["hooks"] = existing_hooks
 
+    # Install MCP server.
+    existing_mcp = settings.get("mcpServers", {})
+    existing_mcp.update(_generate_mcp_config())
+    settings["mcpServers"] = existing_mcp
+
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
     claude_md_msg = _install_claude_md()
 
-    parts = ["Hooks installed."]
+    parts = ["Hooks + MCP server installed."]
     if conflicts:
         parts.append(f"Replaced hooks for: {', '.join(conflicts)}.")
     parts.append(claude_md_msg)

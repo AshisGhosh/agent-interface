@@ -25,6 +25,12 @@ from agent_interface.orchestrator.states import OPEN_STATUSES, TaskStatus
 
 # ── id helpers ───────────────────────────────────────────────────────────────
 
+def _slug(text: str) -> str:
+    """Generate a short slug from text for dep references."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40]
+
+
 def _new_project_id() -> str:
     return "p-" + uuid.uuid4().hex[:8]
 
@@ -298,6 +304,58 @@ def list_tasks(
         args,
     ).fetchall()
     return [_row_to_task(conn, r) for r in rows]
+
+
+def plan_project(
+    conn: sqlite3.Connection,
+    name: str,
+    description: str,
+    task_specs: list[dict],
+    *,
+    autonomy: str = "none",
+    creator: str = "user",
+) -> tuple[Project, list[Task]]:
+    """Create a project and its full task graph in one transaction.
+
+    Each task_spec is a dict with:
+        title (str, required)
+        description (str, optional)
+        priority (int, optional, default 2)
+        tags (list[str], optional)
+        depends_on (list[str], optional) — titles (not ids) of other tasks in
+            this same plan, resolved by order.
+
+    Returns (project, tasks). All user-created tasks land as `ready` unless
+    they have deps (in which case `backlog` until deps are done).
+    """
+    proj = create_project(conn, name, description=description, autonomy=autonomy)
+
+    title_to_id: dict[str, str] = {}
+    tasks: list[Task] = []
+
+    for spec in task_specs:
+        title = spec["title"]
+        dep_titles = spec.get("depends_on", [])
+        dep_ids = [title_to_id[d] for d in dep_titles if d in title_to_id]
+
+        has_deps = bool(dep_ids) or len(dep_ids) < len(dep_titles)
+        status = TaskStatus.BACKLOG.value if has_deps else TaskStatus.READY.value
+
+        task = add_task(
+            conn,
+            proj.id,
+            title,
+            description=spec.get("description"),
+            priority=spec.get("priority", 2),
+            tags=spec.get("tags", []),
+            depends_on=dep_ids,
+            creator=creator,
+            status=status,
+        )
+        title_to_id[title] = task.id
+        tasks.append(task)
+
+    return proj, tasks
 
 
 # ── state transitions ────────────────────────────────────────────────────────

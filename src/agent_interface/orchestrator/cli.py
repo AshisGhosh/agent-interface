@@ -304,6 +304,41 @@ def cmd_done(
     console.print(f"Done [cyan]{task_id}[/cyan].")
 
 
+def cmd_dispatch(
+    project: str = typer.Argument(..., help="Project name or id."),
+    n: int = typer.Option(1, "--n", "-n", help="Number of agents to spawn."),
+    no_worktree: bool = typer.Option(False, "--no-worktree", help="Skip git worktree creation."),
+    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tag filter."),
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory (default: current)."),
+) -> None:
+    """Dispatch agents to work on ready tasks from a project."""
+    from agent_interface.orchestrator.dispatch import dispatch_project
+
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    try:
+        results = dispatch_project(
+            project, n,
+            cwd=cwd,
+            worktree=not no_worktree,
+            tags=tag_list,
+        )
+    except (RuntimeError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    if not results:
+        console.print("[dim]No ready tasks to dispatch.[/dim]")
+        return
+
+    for r in results:
+        wt = f"  [dim]worktree: {r.worktree_path}[/dim]" if r.worktree_path else ""
+        console.print(f"  [green]+[/green] [cyan]{r.task_id}[/cyan] → {r.tmux_target}{wt}")
+    console.print(
+        f"\nDispatched {len(results)} agent(s)."
+        f" Use [bold]agi board {project}[/bold] to watch."
+    )
+
+
 def cmd_board(
     project: Optional[str] = typer.Argument(None),
 ) -> None:

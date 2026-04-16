@@ -74,6 +74,25 @@ def build_server():
     server = FastMCP("agi")
 
     @server.tool()
+    def label_session(label: str) -> dict:
+        """Set a short label for the current session.
+
+        Call this once when you understand the task, with a 5-10 word
+        summary of what you're working on. Update it if the focus of
+        work changes significantly.
+
+        Args:
+            label: Short description (5-10 words).
+        """
+        sid = _require_session()
+        from agent_interface.db import get_connection as _base_conn
+        from agent_interface.registry import rename_session
+
+        conn = _base_conn()
+        rename_session(conn, sid, label)
+        return {"session_id": sid, "label": label}
+
+    @server.tool()
     def get_assignment() -> dict:
         """Return the task currently assigned to this session, if any.
 
@@ -257,6 +276,86 @@ def build_server():
         ).fetchall()
         tasks = [core.get_task(conn, r["id"]) for r in rows]
         return {"tasks": [_task_to_dict(t) for t in tasks if t]}
+
+    @server.tool()
+    def plan_project(
+        name: str,
+        description: str,
+        tasks: list[dict],
+    ) -> dict:
+        """Create a project with a full task graph in one call.
+
+        This is the main way to set up a new project. Provide a name,
+        description, and a list of task specs. Each task spec is a dict:
+
+            {
+                "title": "set up training infra",
+                "description": "Install CUDA, set up venv, verify GPU access",
+                "priority": 0,
+                "tags": ["infra"],
+                "depends_on": []
+            }
+
+        The depends_on field uses task *titles* (not ids) to reference other
+        tasks in the same plan. Tasks with no dependencies start as `ready`
+        (immediately claimable). Tasks with dependencies start as `backlog`.
+
+        Priority: 0 = highest, 3 = lowest. Default is 2.
+
+        After planning, the user will review with `agi board` and then
+        dispatch agents with `agi dispatch`.
+        """
+        conn = get_connection()
+        proj, created_tasks = core.plan_project(
+            conn, name, description, tasks,
+        )
+        return {
+            "project": {
+                "id": proj.id,
+                "name": proj.name,
+                "description": proj.description,
+            },
+            "tasks": [_task_to_dict(t) for t in created_tasks],
+            "ready": sum(1 for t in created_tasks if t.status == "ready"),
+            "backlog": sum(1 for t in created_tasks if t.status == "backlog"),
+        }
+
+    @server.tool()
+    def dispatch(
+        project: str,
+        n: int = 1,
+        worktree: bool = True,
+        tags: Optional[list[str]] = None,
+    ) -> dict:
+        """Dispatch N agents to work on ready tasks from a project.
+
+        Each dispatched agent gets its own tmux window and (if in a git repo)
+        its own worktree. The agent's session starts with the task assignment
+        injected via the SessionStart hook.
+
+        Args:
+            project: Project name or id.
+            n: Number of agents to spawn (default 1).
+            worktree: Create git worktrees for isolation (default true).
+            tags: Only dispatch tasks matching all listed tags.
+
+        Requires tmux and the claude CLI to be available.
+        """
+        from agent_interface.orchestrator.dispatch import dispatch_project
+
+        results = dispatch_project(project, n, worktree=worktree, tags=tags)
+        return {
+            "dispatched": len(results),
+            "agents": [
+                {
+                    "task_id": r.task_id,
+                    "session_id": r.session_id,
+                    "tmux_target": r.tmux_target,
+                    "worktree_path": r.worktree_path,
+                }
+                for r in results
+            ],
+        }
 
     return server
 

@@ -605,6 +605,7 @@ app.command("block")(_orch_cli.cmd_block)
 app.command("unblock")(_orch_cli.cmd_unblock)
 app.command("done")(_orch_cli.cmd_done)
 app.command("board")(_orch_cli.cmd_board)
+app.command("dispatch")(_orch_cli.cmd_dispatch)
 
 
 @app.command("mcp", hidden=True)
