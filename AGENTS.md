@@ -40,3 +40,57 @@ The CLI is `agi`. There is no second binary.
 - Tests go next to the module (see `tests/`). Use the `conn` fixture in `tests/conftest.py` for in-memory SQLite.
 - Don't introduce async unless an operation genuinely needs it. The codebase is synchronous by design.
 - Keep CLI hot-path verbs flat (`agi next`, `agi done`). Namespace only admin (`agi tasks add`).
+
+## Dev workflow (API + UI)
+
+The backend is FastAPI (`src/agent_interface/web/`) and the UI is a Next.js 15
+app under `ui/`. `agi serve` is the single entry point that wires them up.
+
+### One-shot dev (hot reload, two processes)
+
+    uv sync
+    (cd ui && npm install)          # once
+    uv run agi serve --dev --reload
+
+This starts:
+
+- FastAPI on http://127.0.0.1:8000 (with uvicorn --reload)
+- `npm run dev` in `ui/` on http://127.0.0.1:3000
+
+Browse the UI at **http://localhost:3000**. The Next dev server proxies
+`/api/*` to FastAPI (see `ui/next.config.ts`). `AGI_API_URL` is exported
+into the child process so the proxy target matches `--host`/`--port`.
+
+Shutdown: Ctrl-C. The CLI forwards termination to the Next child process.
+
+### Production-style serve (single process)
+
+    (cd ui && npm run build)        # emits ui/out/
+    uv run agi serve                # FastAPI serves /projects, /tasks, + ui/out at /
+
+FastAPI mounts `ui/out` at `/` *after* the API routes, so `/projects`,
+`/tasks/...`, `/events/stream`, and `/openapi.json` keep resolving to the
+API; anything else falls through to the static export.
+
+If `ui/out` is missing, `agi serve` prints a warning and serves the API
+only. Override the path with `--static-dir`, or skip the mount entirely
+with `--no-ui`.
+
+### Just the API (tests, scripts, MCP)
+
+    uv run agi serve --no-ui
+    uv run agi serve --no-ui --reload
+
+### Flags
+
+    --host, --port        FastAPI bind address (default 127.0.0.1:8000)
+    --dev                 Spawn `npm run dev` alongside FastAPI
+    --ui-port             Next dev-server port (default 3000)
+    --ui-dir              Path to the Next project (default ./ui)
+    --static-dir          Override the static-export directory
+    --no-ui               Do not mount or spawn any UI
+    --reload              Uvicorn auto-reload on code changes
+
+The UI's own `npm run dev` / `npm run build` / `npm run start` scripts
+still work for UI-only iteration; `agi serve` is the glue that keeps the
+API and UI aligned during everyday development.

@@ -404,37 +404,18 @@ def cmd_archive(query: str) -> None:
 
 @app.command("prune")
 def cmd_prune() -> None:
-    """Archive done or stale sessions whose processes have already exited.
-
-    Sessions whose pid is still alive are spared — the registry has just
-    drifted out of sync with the real state, and those can be re-synced
-    with `agi scan` rather than dropped.
-    """
-    from agent_interface.registry import _pid_alive
-
+    """Archive all stale and done sessions."""
     conn = get_connection()
     sessions = list_sessions(conn, include_done=True)
     pruned = 0
-    skipped_alive = 0
     for s in sessions:
-        eligible = s.state == SessionState.DONE or is_stale(s)
-        if not eligible:
-            continue
-        if s.pid and _pid_alive(s.pid):
-            skipped_alive += 1
-            continue
-        archive_session(conn, s.id)
-        pruned += 1
-    parts = []
+        if s.state == SessionState.DONE or is_stale(s):
+            archive_session(conn, s.id)
+            pruned += 1
     if pruned:
-        parts.append(f"Pruned {pruned} session(s).")
-    if skipped_alive:
-        parts.append(
-            f"Spared {skipped_alive} with live pid (run `agi scan` to re-sync)."
-        )
-    if not parts:
-        parts.append("[dim]Nothing to prune.[/dim]")
-    console.print(" ".join(parts))
+        console.print(f"Pruned {pruned} session(s).")
+    else:
+        console.print("[dim]Nothing to prune.[/dim]")
 
 
 @app.command("restore")
@@ -641,21 +622,150 @@ def cmd_mcp() -> None:
 
 @app.command("serve")
 def cmd_serve(
-    host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
-    port: int = typer.Option(8765, "--port", "-p", help="Bind port."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind."),
+    port: int = typer.Option(8000, "--port", help="FastAPI port."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes."),
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Also start the Next.js dev server; skip serving the static export.",
+    ),
+    ui_port: int = typer.Option(3000, "--ui-port", help="Next.js dev-server port."),
+    ui_dir: str = typer.Option(
+        "ui",
+        "--ui-dir",
+        help="Path to the Next.js project (relative to cwd or absolute).",
+    ),
+    static_dir: Optional[str] = typer.Option(
+        None,
+        "--static-dir",
+        help="Override the path to the Next.js static export (defaults to <ui-dir>/out).",
+    ),
+    no_ui: bool = typer.Option(
+        False, "--no-ui", help="Run only the API; don't mount or spawn any UI.",
+    ),
 ) -> None:
-    """Run the FastAPI orchestrator web server."""
+    """Run the FastAPI backend, optionally with the Next.js dev server.
+
+    Three modes:
+
+      agi serve --dev   → FastAPI (reload) + `npm run dev` in ui/. The dev
+                          server proxies /api/* to FastAPI. Browse the UI
+                          on http://localhost:<ui-port>.
+      agi serve         → FastAPI serves the built Next.js static export
+                          (ui/out) at /. Run `npm run build` in ui/ first.
+      agi serve --no-ui → API only, no static mount, no child process.
+    """
     import uvicorn
 
-    console.print(f"[green]agi web[/green] → http://{host}:{port}")
-    uvicorn.run(
-        "agent_interface.web.app:create_app",
-        host=host,
-        port=port,
-        reload=reload,
-        factory=True,
+    from agent_interface.web import create_app
+
+    if dev:
+        _serve_dev(host=host, port=port, ui_dir=ui_dir, ui_port=ui_port, reload=reload)
+        return
+
+    resolved_static: Optional[str] = None
+    if not no_ui:
+        resolved_static = _resolve_static_dir(ui_dir, static_dir)
+
+    if reload:
+        if resolved_static is not None:
+            os.environ["AGI_STATIC_DIR"] = resolved_static
+        else:
+            os.environ.pop("AGI_STATIC_DIR", None)
+        uvicorn.run(
+            "agent_interface.web:create_app_from_env",
+            host=host,
+            port=port,
+            reload=True,
+            factory=True,
+        )
+    else:
+        uvicorn.run(create_app(static_dir=resolved_static), host=host, port=port)
+
+
+def _resolve_static_dir(ui_dir: str, override: Optional[str]) -> Optional[str]:
+    """Return an existing static-export directory, or None with a warning."""
+    from pathlib import Path
+
+    candidate = Path(override) if override else Path(ui_dir) / "out"
+    candidate = candidate.expanduser().resolve()
+    if candidate.is_dir():
+        return str(candidate)
+    console.print(
+        f"[yellow]No static export at[/yellow] {candidate}. "
+        "Run `npm run build` in the UI directory, or pass --dev / --no-ui.",
+        highlight=False,
     )
+    return None
+
+
+def _serve_dev(*, host: str, port: int, ui_dir: str, ui_port: int, reload: bool) -> None:
+    """Run FastAPI (optionally with --reload) alongside `npm run dev`."""
+    import shutil
+    import signal
+    import subprocess
+    from pathlib import Path
+
+    import uvicorn
+
+    from agent_interface.web import create_app
+
+    ui_path = Path(ui_dir).expanduser().resolve()
+    if not (ui_path / "package.json").is_file():
+        console.print(
+            f"[red]No package.json at[/red] {ui_path}. "
+            "Pass --ui-dir or run from the repo root.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    npm = shutil.which("npm")
+    if npm is None:
+        console.print("[red]npm not found on PATH.[/red]", highlight=False)
+        raise typer.Exit(1)
+
+    env = os.environ.copy()
+    env["AGI_API_URL"] = f"http://{host}:{port}"
+
+    console.print(
+        f"[green]Starting Next.js dev server[/green] in {ui_path} "
+        f"(port {ui_port}); API at http://{host}:{port}",
+        highlight=False,
+    )
+
+    ui_proc = subprocess.Popen(
+        [npm, "run", "dev", "--", "--port", str(ui_port)],
+        cwd=str(ui_path),
+        env=env,
+    )
+
+    def _stop_ui(*_: object) -> None:
+        if ui_proc.poll() is None:
+            ui_proc.terminate()
+
+    signal.signal(signal.SIGTERM, lambda *_: _stop_ui())
+
+    try:
+        if reload:
+            os.environ.pop("AGI_STATIC_DIR", None)
+            uvicorn.run(
+                "agent_interface.web:create_app_from_env",
+                host=host,
+                port=port,
+                reload=True,
+                factory=True,
+            )
+        else:
+            uvicorn.run(create_app(), host=host, port=port)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _stop_ui()
+        try:
+            ui_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            ui_proc.kill()
 
 
 def main() -> None:

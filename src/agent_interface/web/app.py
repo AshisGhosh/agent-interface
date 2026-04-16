@@ -19,11 +19,13 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 from typing import AsyncIterator, Iterable, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from agent_interface.orchestrator import core
 from agent_interface.orchestrator.db import get_connection
@@ -47,12 +49,19 @@ def _default_conn_factory() -> sqlite3.Connection:
     return get_connection()
 
 
-def create_app(conn_factory=_default_conn_factory) -> FastAPI:
+def create_app(
+    conn_factory=_default_conn_factory,
+    static_dir: Optional[str] = None,
+) -> FastAPI:
     """Build the FastAPI app.
 
     `conn_factory` is injected so tests can swap in an isolated DB. Each
     request opens a fresh connection and closes it on teardown — sqlite3
     connections aren't safe to share across threads.
+
+    `static_dir`, when set, mounts that directory at `/` so a Next.js
+    static export can be served alongside the API (production mode).
+    The mount is registered last, so API routes always win the match.
     """
     app = FastAPI(title="agi orchestrator", version="0.1.0")
 
@@ -216,6 +225,9 @@ def create_app(conn_factory=_default_conn_factory) -> FastAPI:
             },
         )
 
+    if static_dir is not None:
+        mount_static_export(app, static_dir)
+
     return app
 
 
@@ -363,3 +375,15 @@ async def _event_stream(
             yield ": keepalive\n\n"
 
         await asyncio.sleep(poll)
+
+
+def mount_static_export(app: FastAPI, static_dir: str) -> None:
+    """Serve a Next.js static export from `static_dir` at the app root.
+
+    Registered after all API routes, so `/projects` etc. keep matching the
+    FastAPI handlers first and everything else falls through to the files.
+    """
+    path = Path(static_dir).expanduser().resolve()
+    if not path.is_dir():
+        raise FileNotFoundError(f"Static export directory not found: {path}")
+    app.mount("/", StaticFiles(directory=str(path), html=True), name="ui")
