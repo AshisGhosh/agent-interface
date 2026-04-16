@@ -133,32 +133,53 @@ def _install_claude_md() -> str:
     return "CLAUDE.md instruction added."
 
 
-def _find_agi_command() -> list[str]:
-    """Resolve the agi command for MCP server config.
-
-    Prefers the globally-installed `agi` binary. Falls back to `uv run agi`
-    from the source directory.
-    """
+def _find_agi_path() -> str:
+    """Resolve the agi binary path."""
     import shutil
 
     agi_path = shutil.which("agi")
     if agi_path:
-        return [agi_path, "mcp"]
+        return agi_path
 
-    # Fallback: run from source.
-    src_dir = str(Path(__file__).resolve().parent.parent.parent)
-    return ["uv", "run", "--directory", src_dir, "agi", "mcp"]
+    # Fallback: local venv.
+    local = str(Path(__file__).resolve().parent.parent.parent / ".venv" / "bin" / "agi")
+    if Path(local).exists():
+        return local
+    return "agi"
 
 
-def _generate_mcp_config() -> dict:
-    """Generate the mcpServers entry for the agi MCP server."""
-    cmd = _find_agi_command()
-    return {
-        "agi": {
-            "command": cmd[0],
-            "args": cmd[1:],
-        }
-    }
+def _install_mcp_server() -> str:
+    """Register the agi MCP server via `claude mcp add`.
+
+    Uses the CLI registration path so Claude Code properly discovers
+    the server (project-scoped in .claude.json).
+    """
+    import subprocess
+
+    agi_path = _find_agi_path()
+
+    # Check if already registered.
+    try:
+        result = subprocess.run(
+            ["claude", "mcp", "list"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if "agi:" in result.stdout:
+            return "MCP server already registered."
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "MCP server: claude CLI not found, skipping."
+
+    # Register via `claude mcp add`.
+    try:
+        result = subprocess.run(
+            ["claude", "mcp", "add", "agi", "--", agi_path, "mcp"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return "MCP server registered."
+        return f"MCP server registration failed: {result.stderr.strip()}"
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return f"MCP server registration failed: {e}"
 
 
 def install_hooks() -> tuple[bool, str]:
@@ -184,19 +205,16 @@ def install_hooks() -> tuple[bool, str]:
     existing_hooks.update(new_hooks)
     settings["hooks"] = existing_hooks
 
-    # Install MCP server.
-    existing_mcp = settings.get("mcpServers", {})
-    existing_mcp.update(_generate_mcp_config())
-    settings["mcpServers"] = existing_mcp
-
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
     claude_md_msg = _install_claude_md()
+    mcp_msg = _install_mcp_server()
 
-    parts = ["Hooks + MCP server installed."]
+    parts = ["Hooks installed."]
     if conflicts:
         parts.append(f"Replaced hooks for: {', '.join(conflicts)}.")
     parts.append(claude_md_msg)
+    parts.append(mcp_msg)
     return True, " ".join(parts)
 
 
