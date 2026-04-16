@@ -44,4 +44,26 @@ export interface TaskPatch {
   block_reason?: string;
   block_needs?: string;
   done_summary?: string;
+  title?: string;
+  description?: string;
+  clear_description?: boolean;
+  tags?: string[];
+}
+
+export interface TaskEvent {
+  id: number | null;
+  task_id: string;
+  event_type: string;
+  actor: string;
+  payload_json: string | null;
+  created_at: string;
+}
+
+export interface SSETaskEvent {
+  id: number | null;
+  task_id: string;
+  event_type: string;
+  actor: string;
+  payload: string | null;
+  created_at: string;
 }
