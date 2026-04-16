@@ -30,10 +30,18 @@ export const COLUMNS: ColumnDef[] = [
 interface BoardColumnProps {
   column: ColumnDef;
   tasks: Task[];
-  onOpenTask?: (task: Task) => void;
+  selectedIds?: Set<string>;
+  onToggleSelected?: (id: string) => void;
+  selectable?: boolean;
 }
 
-export function BoardColumn({ column, tasks, onOpenTask }: BoardColumnProps) {
+export function BoardColumn({
+  column,
+  tasks,
+  selectedIds,
+  onToggleSelected,
+  selectable,
+}: BoardColumnProps) {
   const droppableId = `${COLUMN_ID_PREFIX}${column.key}`;
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
@@ -63,7 +71,13 @@ export function BoardColumn({ column, tasks, onOpenTask }: BoardColumnProps) {
               </p>
             ) : (
               tasks.map((t) => (
-                <SortableTaskCard key={t.id} task={t} onOpen={onOpenTask} />
+                <SortableTaskCard
+                  key={t.id}
+                  task={t}
+                  selected={selectedIds?.has(t.id)}
+                  onToggleSelected={onToggleSelected}
+                  selectable={selectable}
+                />
               ))
             )}
           </div>

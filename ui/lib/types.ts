@@ -44,26 +44,14 @@ export interface TaskPatch {
   block_reason?: string;
   block_needs?: string;
   done_summary?: string;
-  title?: string;
-  description?: string;
-  clear_description?: boolean;
+}
+
+export interface TaskCreate {
+  project: string;
+  title: string;
+  description?: string | null;
+  priority?: number;
   tags?: string[];
-}
-
-export interface TaskEvent {
-  id: number | null;
-  task_id: string;
-  event_type: string;
-  actor: string;
-  payload_json: string | null;
-  created_at: string;
-}
-
-export interface SSETaskEvent {
-  id: number | null;
-  task_id: string;
-  event_type: string;
-  actor: string;
-  payload: string | null;
-  created_at: string;
+  depends_on?: string[];
+  parent_id?: string | null;
 }

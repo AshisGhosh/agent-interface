@@ -17,6 +17,7 @@ import {
   arrayMove,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
+import { Plus } from "lucide-react";
 
 import { listProjectTasks, patchTask } from "@/lib/api";
 import type { Task, TaskStatus } from "@/lib/types";
@@ -27,8 +28,10 @@ import {
   COLUMN_ID_PREFIX,
   COLUMNS,
 } from "@/components/board-column";
+import { BulkActionsBar } from "@/components/bulk-actions-bar";
+import { NewTaskDialog } from "@/components/new-task-dialog";
 import { TaskCard } from "@/components/task-card";
-import { TaskDetailSheet } from "@/components/task-detail-sheet";
+import { Button } from "@/components/ui/button";
 
 type TasksByStatus = Record<TaskStatus, Task[]>;
 
@@ -78,6 +81,14 @@ function resolveContainer(
   return null;
 }
 
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
 export interface BoardProps {
   projectId: string | null;
   className?: string;
@@ -89,7 +100,8 @@ export function Board({ projectId, className }: BoardProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [newDialogOpen, setNewDialogOpen] = useState(false);
 
   // Snapshot of the per-status arrays when drag started, so we can diff
   // priorities on drop and only PATCH tasks that actually moved.
@@ -120,6 +132,63 @@ export function Board({ projectId, className }: BoardProps) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Clear any selection when switching projects — selection ids are no longer
+  // visible and would silently target tasks the user can't see.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [projectId]);
+
+  const allTasks = useMemo(
+    () =>
+      (Object.keys(tasksByStatus) as TaskStatus[]).flatMap(
+        (s) => tasksByStatus[s],
+      ),
+    [tasksByStatus],
+  );
+
+  // Drop selections for tasks that have disappeared (e.g. after a delete).
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const present = new Set(allTasks.map((t) => t.id));
+    let changed = false;
+    const next = new Set<string>();
+    for (const id of selectedIds) {
+      if (present.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelectedIds(next);
+  }, [allTasks, selectedIds]);
+
+  const selectedTasks = useMemo(
+    () => allTasks.filter((t) => selectedIds.has(t.id)),
+    [allTasks, selectedIds],
+  );
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Keyboard shortcut 'n' opens the new-task dialog.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "n" && e.key !== "N") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+      if (!projectId) return;
+      e.preventDefault();
+      setNewDialogOpen(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [projectId]);
 
   const activeTask = useMemo(() => {
     if (!activeId) return null;
@@ -293,11 +362,26 @@ export function Board({ projectId, className }: BoardProps) {
             </span>
           )}
         </div>
-        {projectId && (
-          <span className="font-mono text-xs text-muted-foreground">
-            {projectId}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {projectId && (
+            <span className="font-mono text-xs text-muted-foreground">
+              {projectId}
+            </span>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setNewDialogOpen(true)}
+            disabled={!projectId}
+            title="New task (n)"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            New task
+            <kbd className="ml-1 hidden rounded border bg-muted px-1 text-[10px] font-mono text-muted-foreground sm:inline">
+              n
+            </kbd>
+          </Button>
+        </div>
       </header>
       {!projectId ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -312,31 +396,39 @@ export function Board({ projectId, className }: BoardProps) {
           onDragEnd={onDragEnd}
           onDragCancel={onDragCancel}
         >
-          <div className="flex flex-1 gap-4 overflow-x-auto p-6">
-            {COLUMNS.map((col) => (
-              <BoardColumn
-                key={col.key}
-                column={col}
-                tasks={tasksByStatus[col.key] ?? []}
-                onOpenTask={(t) => setOpenTaskId(t.id)}
-              />
-            ))}
+          <div className="relative flex flex-1 flex-col">
+            <div className="flex flex-1 gap-4 overflow-x-auto p-6">
+              {COLUMNS.map((col) => (
+                <BoardColumn
+                  key={col.key}
+                  column={col}
+                  tasks={tasksByStatus[col.key] ?? []}
+                  selectedIds={selectedIds}
+                  onToggleSelected={toggleSelected}
+                  selectable
+                />
+              ))}
+            </div>
+            <BulkActionsBar
+              selected={selectedTasks}
+              onClear={clearSelection}
+              onApplied={async () => {
+                await refresh();
+                clearSelection();
+              }}
+            />
           </div>
           <DragOverlay>
             {activeTask ? <TaskCard task={activeTask} /> : null}
           </DragOverlay>
         </DndContext>
       )}
-      <TaskDetailSheet
-        taskId={openTaskId}
-        open={openTaskId !== null}
-        onOpenChange={(o) => {
-          if (!o) {
-            setOpenTaskId(null);
-            void refresh();
-          }
-        }}
-        onTaskChanged={() => {
+      <NewTaskDialog
+        open={newDialogOpen}
+        onOpenChange={setNewDialogOpen}
+        projectId={projectId}
+        existingTasks={allTasks}
+        onCreated={() => {
           void refresh();
         }}
       />

@@ -1,4 +1,4 @@
-import type { Project, Task, TaskEvent, TaskPatch } from "@/lib/types";
+import type { Project, Task, TaskCreate, TaskPatch } from "@/lib/types";
 
 const API_BASE = "/api";
 
@@ -33,11 +33,6 @@ export async function listProjectTasks(
   return handle<Task[]>(res);
 }
 
-export async function getTask(taskId: string): Promise<Task> {
-  const res = await fetch(`${API_BASE}/tasks/${taskId}`, { cache: "no-store" });
-  return handle<Task>(res);
-}
-
 export async function patchTask(
   taskId: string,
   patch: TaskPatch,
@@ -50,9 +45,11 @@ export async function patchTask(
   return handle<Task>(res);
 }
 
-export async function listTaskEvents(taskId: string): Promise<TaskEvent[]> {
-  const res = await fetch(`${API_BASE}/tasks/${taskId}/events`, {
-    cache: "no-store",
+export async function createTask(body: TaskCreate): Promise<Task> {
+  const res = await fetch(`${API_BASE}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
-  return handle<TaskEvent[]>(res);
+  return handle<Task>(res);
 }
