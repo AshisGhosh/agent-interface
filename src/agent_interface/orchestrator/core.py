@@ -829,6 +829,18 @@ def _rebase_and_squash_to_main(task: "Task", summary: str) -> dict:
                 cwd=main_wt, capture_output=True, text=True, timeout=10,
             )
             sha = rev.stdout.strip()[:12] if rev.returncode == 0 else None
+
+            # Post-merge cleanup: remove the worktree and task branch now
+            # that everything is on main. Best-effort — failures don't
+            # affect the merge result.
+            _sub.run(
+                ["git", "worktree", "remove", "--force", wt],
+                cwd=main_wt, capture_output=True, timeout=30,
+            )
+            _sub.run(
+                ["git", "branch", "-D", branch],
+                cwd=main_wt, capture_output=True, timeout=10,
+            )
             return {"status": "merged", "sha": sha}
         finally:
             _fc.flock(lf.fileno(), _fc.LOCK_UN)
