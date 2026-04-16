@@ -8,7 +8,6 @@ impacted by orchestrator problems.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Optional
 
@@ -40,40 +39,56 @@ def _find_task_by_env() -> Optional[str]:
     return tid if tid else None
 
 
+def _delete_placeholder_session(conn, session_id: str) -> None:
+    """Delete a dispatch placeholder session row.
+
+    Only deletes if the row looks like a placeholder:
+    - No pid (real sessions get one from the SessionStart hook)
+    - is_managed = 1 (set by dispatch)
+
+    Also clears any events pointing at it (dispatch-created ones).
+    """
+    row = conn.execute(
+        "SELECT pid, is_managed FROM sessions WHERE id=?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if row["pid"] is not None or not row["is_managed"]:
+        # Not a placeholder — leave alone.
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DELETE FROM events WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
 def on_session_start(session_id: str, cwd: Optional[str]) -> Optional[dict]:
     """Build an assignment-context payload for Claude Code SessionStart.
 
+    The task's assignment uses the dispatch placeholder session id (from
+    AGI_SESSION_ID env), not the claude-native session_id. That keeps the
+    stable identity — placeholder survives claude sub-process lifecycle and
+    carries the tmux coordinates the user needs for `agi jump`.
+
     Returns a dict matching Claude Code's hook additionalContext schema, or
-    None if there's nothing to inject. Callers should json.dumps and print.
+    None if there's nothing to inject.
     """
     try:
         conn = get_connection()
 
-        # Preferred: explicit env binding from dispatch.
+        # Look up task via env binding. The task is already bound to the
+        # placeholder session at dispatch time — we don't re-bind here.
         env_task_id = _find_task_by_env()
         task = None
         if env_task_id:
             task = core.get_task(conn, env_task_id)
-            if task and task.assigned_session_id != session_id:
-                # Bind now (dispatched session is seeing its task for the first time).
+            if task and task.status == TaskStatus.READY.value:
+                # Dispatch may have registered this task as ready but the
+                # claim hasn't been formalised. Move to in_progress.
                 conn.execute(
-                    "UPDATE tasks SET assigned_session_id=?, updated_at=? WHERE id=?",
-                    (session_id, task.created_at, task.id),
-                )
-                # Also move to in_progress if still ready.
-                if task.status == TaskStatus.READY.value:
-                    conn.execute(
-                        "UPDATE tasks SET status=? WHERE id=?",
-                        (TaskStatus.IN_PROGRESS.value, task.id),
-                    )
-                conn.execute(
-                    "INSERT INTO task_events"
-                    " (task_id, event_type, actor, payload_json, created_at)"
-                    " VALUES (?,?,?,?,datetime('now'))",
-                    (
-                        task.id, "assigned", f"session:{session_id}",
-                        json.dumps({"session_id": session_id, "source": "env"}),
-                    ),
+                    "UPDATE tasks SET status=? WHERE id=?",
+                    (TaskStatus.IN_PROGRESS.value, task.id),
                 )
                 conn.commit()
                 task = core.get_task(conn, task.id)

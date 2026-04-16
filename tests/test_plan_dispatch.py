@@ -113,13 +113,11 @@ def test_plan_then_claim_flow(oconn):
     # Nothing else to claim.
     assert core.claim_next(oconn, "sess-2", project="lifecycle") is None
 
-    # Finish first.
+    # Finish first — auto-promote should unlock second.
     core.done_task(oconn, claimed.id, summary="done")
 
-    # Promote second (dep now done).
     second = tasks[1]
-    promoted = core.promote(oconn, second.id)
-    assert promoted.status == TaskStatus.READY
+    assert core.get_task(oconn, second.id).status == TaskStatus.READY
 
     # Now second is claimable.
     claimed2 = core.claim_next(oconn, "sess-2", project="lifecycle")

@@ -7,6 +7,7 @@ package should import private session internals.
 
 from agent_interface.orchestrator.core import (
     add_task,
+    approve_review,
     block_task,
     claim_next,
     create_project,
@@ -17,6 +18,8 @@ from agent_interface.orchestrator.core import (
     list_tasks,
     progress,
     promote,
+    reap_orphaned_tasks,
+    reject_review,
     reopen_task,
     unblock_task,
 )
@@ -29,6 +32,7 @@ __all__ = [
     "TaskEvent",
     "TaskStatus",
     "add_task",
+    "approve_review",
     "block_task",
     "claim_next",
     "create_project",
@@ -39,6 +43,8 @@ __all__ = [
     "list_tasks",
     "progress",
     "promote",
+    "reap_orphaned_tasks",
+    "reject_review",
     "reopen_task",
     "unblock_task",
 ]

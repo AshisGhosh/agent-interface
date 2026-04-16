@@ -218,15 +218,29 @@ def scan_and_register() -> tuple[bool, list[tuple[str, ProcessInfo]]]:
 
     for proc in processes:
         if proc.pid in existing_pids:
-            # Refresh tmux metadata for existing sessions.
-            if proc.tmux_session is not None:
-                conn.execute(
-                    """UPDATE sessions
-                       SET tmux_session=?, tmux_window=?, tmux_pane=?
-                       WHERE pid=?""",
-                    (proc.tmux_session, proc.tmux_window, proc.tmux_pane, proc.pid),
-                )
-                conn.commit()
+            # Row exists. Refresh tmux metadata, and un-archive / un-close
+            # it if the real process is still alive — the DB state had
+            # drifted out of sync with reality.
+            existing_state = conn.execute(
+                "SELECT state FROM sessions WHERE pid=?", (proc.pid,),
+            ).fetchone()
+            new_state = existing_state["state"] if existing_state else "running"
+            if new_state in ("archived", "done"):
+                new_state = "running"
+            conn.execute(
+                """UPDATE sessions
+                   SET tmux_session=COALESCE(?, tmux_session),
+                       tmux_window=COALESCE(?, tmux_window),
+                       tmux_pane=COALESCE(?, tmux_pane),
+                       state=?,
+                       archived_at=NULL
+                   WHERE pid=?""",
+                (
+                    proc.tmux_session, proc.tmux_window, proc.tmux_pane,
+                    new_state, proc.pid,
+                ),
+            )
+            conn.commit()
             results.append(("skipped", proc))
             continue
 

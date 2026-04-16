@@ -53,9 +53,12 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (and initialize) a SQLite connection."""
     path = db_path or get_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # 10s timeout — with multiple agents hitting the DB concurrently,
+    # default 0s fails immediately on write contention.
+    conn = sqlite3.connect(str(path), timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA_SQL)
     _migrate(conn)

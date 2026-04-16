@@ -404,18 +404,37 @@ def cmd_archive(query: str) -> None:
 
 @app.command("prune")
 def cmd_prune() -> None:
-    """Archive all stale and done sessions."""
+    """Archive done or stale sessions whose processes have already exited.
+
+    Sessions whose pid is still alive are spared — the registry has just
+    drifted out of sync with the real state, and those can be re-synced
+    with `agi scan` rather than dropped.
+    """
+    from agent_interface.registry import _pid_alive
+
     conn = get_connection()
     sessions = list_sessions(conn, include_done=True)
     pruned = 0
+    skipped_alive = 0
     for s in sessions:
-        if s.state == SessionState.DONE or is_stale(s):
-            archive_session(conn, s.id)
-            pruned += 1
+        eligible = s.state == SessionState.DONE or is_stale(s)
+        if not eligible:
+            continue
+        if s.pid and _pid_alive(s.pid):
+            skipped_alive += 1
+            continue
+        archive_session(conn, s.id)
+        pruned += 1
+    parts = []
     if pruned:
-        console.print(f"Pruned {pruned} session(s).")
-    else:
-        console.print("[dim]Nothing to prune.[/dim]")
+        parts.append(f"Pruned {pruned} session(s).")
+    if skipped_alive:
+        parts.append(
+            f"Spared {skipped_alive} with live pid (run `agi scan` to re-sync)."
+        )
+    if not parts:
+        parts.append("[dim]Nothing to prune.[/dim]")
+    console.print(" ".join(parts))
 
 
 @app.command("restore")
@@ -606,6 +625,10 @@ app.command("unblock")(_orch_cli.cmd_unblock)
 app.command("done")(_orch_cli.cmd_done)
 app.command("board")(_orch_cli.cmd_board)
 app.command("dispatch")(_orch_cli.cmd_dispatch)
+app.command("review")(_orch_cli.cmd_review)
+app.command("approve")(_orch_cli.cmd_approve)
+app.command("reject")(_orch_cli.cmd_reject)
+app.command("watch")(_orch_cli.cmd_watch)
 
 
 @app.command("mcp", hidden=True)
@@ -614,6 +637,25 @@ def cmd_mcp() -> None:
     from agent_interface.orchestrator.mcp_server import run
 
     run()
+
+
+@app.command("serve")
+def cmd_serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
+    port: int = typer.Option(8765, "--port", "-p", help="Bind port."),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes."),
+) -> None:
+    """Run the FastAPI orchestrator web server."""
+    import uvicorn
+
+    console.print(f"[green]agi web[/green] → http://{host}:{port}")
+    uvicorn.run(
+        "agent_interface.web.app:create_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+    )
 
 
 def main() -> None:

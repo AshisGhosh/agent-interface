@@ -19,10 +19,29 @@ If neither works, tools that require a session id will raise a clear error.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Optional
 
 from agent_interface.orchestrator import core
-from agent_interface.orchestrator.db import get_connection
+from agent_interface.orchestrator.db import get_connection as _open_connection
+
+
+@contextmanager
+def _db():
+    """Open + close DB for one MCP tool call. Keeps connection lifetime short
+    so we don't leak file descriptors or hold write locks across tool calls.
+    """
+    c = _open_connection()
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+# Back-compat for call sites below that still use get_connection(). These
+# should be migrated to use `with _db() as conn:` — migrate incrementally.
+def get_connection():
+    return _open_connection()
 
 
 def _current_session_id() -> Optional[str]:
@@ -81,16 +100,33 @@ def build_server():
         summary of what you're working on. Update it if the focus of
         work changes significantly.
 
+        If this session was dispatched for a task, the 'agi/<task-id>' prefix
+        is preserved automatically so the agent stays identifiable.
+
         Args:
             label: Short description (5-10 words).
         """
+        import os as _os
         sid = _require_session()
         from agent_interface.db import get_connection as _base_conn
         from agent_interface.registry import rename_session
 
+        # Preserve the dispatch prefix so agents can't make themselves
+        # invisible on `agi list`.
+        task_id = _os.environ.get("AGI_TASK_ID")
+        if task_id:
+            prefix = f"agi/{task_id} "
+            final = label if label.startswith(prefix) else f"{prefix}{label}"
+            final = final[:60]
+        else:
+            final = label[:60]
+
         conn = _base_conn()
-        rename_session(conn, sid, label)
-        return {"session_id": sid, "label": label}
+        try:
+            rename_session(conn, sid, final)
+            return {"session_id": sid, "label": final}
+        finally:
+            conn.close()
 
     @server.tool()
     def get_assignment() -> dict:
@@ -103,14 +139,14 @@ def build_server():
         if sid is None:
             return {"task": None, "session_id": None}
 
-        conn = get_connection()
         from agent_interface.orchestrator.hooks import _find_assigned_task
 
-        task = _find_assigned_task(conn, sid)
-        return {
-            "session_id": sid,
-            "task": _task_to_dict(task) if task else None,
-        }
+        with _db() as conn:
+            task = _find_assigned_task(conn, sid)
+            return {
+                "session_id": sid,
+                "task": _task_to_dict(task) if task else None,
+            }
 
     @server.tool()
     def claim_next(
@@ -127,9 +163,9 @@ def build_server():
         Respects dependencies — tasks whose deps aren't done are never claimed.
         """
         sid = _require_session()
-        conn = get_connection()
-        task = core.claim_next(conn, sid, project=project, tags=tags)
-        return {"task": _task_to_dict(task) if task else None}
+        with _db() as conn:
+            task = core.claim_next(conn, sid, project=project, tags=tags)
+            return {"task": _task_to_dict(task) if task else None}
 
     @server.tool()
     def progress(task_id: str, note: str, pct: Optional[int] = None) -> dict:
@@ -142,9 +178,9 @@ def build_server():
         """
         sid = _current_session_id()
         actor = f"session:{sid}" if sid else "system"
-        conn = get_connection()
-        task = core.progress(conn, task_id, note, pct=pct, actor=actor)
-        return _task_to_dict(task)
+        with _db() as conn:
+            task = core.progress(conn, task_id, note, pct=pct, actor=actor)
+            return _task_to_dict(task)
 
     @server.tool()
     def block(task_id: str, reason: str, needs: str = "user") -> dict:
@@ -158,9 +194,9 @@ def build_server():
         """
         sid = _current_session_id()
         actor = f"session:{sid}" if sid else "system"
-        conn = get_connection()
-        task = core.block_task(conn, task_id, reason, needs=needs, actor=actor)
-        return _task_to_dict(task)
+        with _db() as conn:
+            task = core.block_task(conn, task_id, reason, needs=needs, actor=actor)
+            return _task_to_dict(task)
 
     @server.tool()
     def done(
@@ -177,9 +213,9 @@ def build_server():
         """
         sid = _current_session_id()
         actor = f"session:{sid}" if sid else "system"
-        conn = get_connection()
-        task = core.done_task(conn, task_id, summary, spawned=spawned, actor=actor)
-        return _task_to_dict(task)
+        with _db() as conn:
+            task = core.done_task(conn, task_id, summary, spawned=spawned, actor=actor)
+            return _task_to_dict(task)
 
     @server.tool()
     def add_subtask(
@@ -196,24 +232,24 @@ def build_server():
         separately from the current task.
         """
         sid = _require_session()
-        conn = get_connection()
-        parent = core.get_task(conn, parent_id)
-        if parent is None:
-            raise ValueError(f"No such parent task: {parent_id}")
+        with _db() as conn:
+            parent = core.get_task(conn, parent_id)
+            if parent is None:
+                raise ValueError(f"No such parent task: {parent_id}")
 
-        task = core.add_task(
-            conn,
-            parent.project_id,
-            title,
-            description=description,
-            priority=priority if priority is not None else parent.priority,
-            tags=tags or [],
-            parent_id=parent_id,
-            creator=f"session:{sid}",
-            spawned_from_task=parent_id,
-            spawned_from_session=sid,
-        )
-        return _task_to_dict(task)
+            task = core.add_task(
+                conn,
+                parent.project_id,
+                title,
+                description=description,
+                priority=priority if priority is not None else parent.priority,
+                tags=tags or [],
+                parent_id=parent_id,
+                creator=f"session:{sid}",
+                spawned_from_task=parent_id,
+                spawned_from_session=sid,
+            )
+            return _task_to_dict(task)
 
     @server.tool()
     def add_task(
@@ -230,52 +266,52 @@ def build_server():
         child of your current task.
         """
         sid = _require_session()
-        conn = get_connection()
-        task = core.add_task(
-            conn, project, title,
-            description=description,
-            priority=priority,
-            tags=tags or [],
-            creator=f"session:{sid}",
-            spawned_from_session=sid,
-        )
-        return _task_to_dict(task)
+        with _db() as conn:
+            task = core.add_task(
+                conn, project, title,
+                description=description,
+                priority=priority,
+                tags=tags or [],
+                creator=f"session:{sid}",
+                spawned_from_session=sid,
+            )
+            return _task_to_dict(task)
 
     @server.tool()
     def get_task(task_id: str) -> dict:
         """Fetch full details for a task, including recent events."""
-        conn = get_connection()
-        task = core.get_task(conn, task_id)
-        if task is None:
-            raise ValueError(f"No such task: {task_id}")
-        events = core.list_events(conn, task_id)
-        return {
-            **_task_to_dict(task),
-            "events": [
-                {
-                    "event_type": e.event_type,
-                    "actor": e.actor,
-                    "payload": e.payload_json,
-                    "created_at": e.created_at,
-                }
-                for e in events[-20:]  # last 20 for context
-            ],
-        }
+        with _db() as conn:
+            task = core.get_task(conn, task_id)
+            if task is None:
+                raise ValueError(f"No such task: {task_id}")
+            events = core.list_events(conn, task_id)
+            return {
+                **_task_to_dict(task),
+                "events": [
+                    {
+                        "event_type": e.event_type,
+                        "actor": e.actor,
+                        "payload": e.payload_json,
+                        "created_at": e.created_at,
+                    }
+                    for e in events[-20:]  # last 20 for context
+                ],
+            }
 
     @server.tool()
     def list_my_tasks() -> dict:
         """List open tasks assigned to the current session."""
         sid = _require_session()
-        conn = get_connection()
-        rows = conn.execute(
-            """SELECT id FROM tasks
-               WHERE assigned_session_id=?
-               AND status NOT IN ('done')
-               ORDER BY updated_at DESC""",
-            (sid,),
-        ).fetchall()
-        tasks = [core.get_task(conn, r["id"]) for r in rows]
-        return {"tasks": [_task_to_dict(t) for t in tasks if t]}
+        with _db() as conn:
+            rows = conn.execute(
+                """SELECT id FROM tasks
+                   WHERE assigned_session_id=?
+                   AND status NOT IN ('done')
+                   ORDER BY updated_at DESC""",
+                (sid,),
+            ).fetchall()
+            tasks = [core.get_task(conn, r["id"]) for r in rows]
+            return {"tasks": [_task_to_dict(t) for t in tasks if t]}
 
     @server.tool()
     def plan_project(
@@ -305,20 +341,20 @@ def build_server():
         After planning, the user will review with `agi board` and then
         dispatch agents with `agi dispatch`.
         """
-        conn = get_connection()
-        proj, created_tasks = core.plan_project(
-            conn, name, description, tasks,
-        )
-        return {
-            "project": {
-                "id": proj.id,
-                "name": proj.name,
-                "description": proj.description,
-            },
-            "tasks": [_task_to_dict(t) for t in created_tasks],
-            "ready": sum(1 for t in created_tasks if t.status == "ready"),
-            "backlog": sum(1 for t in created_tasks if t.status == "backlog"),
-        }
+        with _db() as conn:
+            proj, created_tasks = core.plan_project(
+                conn, name, description, tasks,
+            )
+            return {
+                "project": {
+                    "id": proj.id,
+                    "name": proj.name,
+                    "description": proj.description,
+                },
+                "tasks": [_task_to_dict(t) for t in created_tasks],
+                "ready": sum(1 for t in created_tasks if t.status == "ready"),
+                "backlog": sum(1 for t in created_tasks if t.status == "backlog"),
+            }
 
     @server.tool()
     def dispatch(

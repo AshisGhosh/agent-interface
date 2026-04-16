@@ -172,8 +172,15 @@ def tasks_list(
 
 
 @tasks_app.command("show")
-def tasks_show(task_id: str) -> None:
-    """Show full task detail + event log."""
+def tasks_show(
+    task_id: str,
+    log_lines: int = typer.Option(
+        30, "--log-lines", help="Lines of agent output log to show (0=none)."
+    ),
+) -> None:
+    """Show full task detail + event log + agent output tail."""
+    import json as _json
+
     conn = get_connection()
     t = _require_task(conn, task_id)
 
@@ -194,6 +201,19 @@ def tasks_show(task_id: str) -> None:
         console.print(f"  {t.description}")
 
     events = core.list_events(conn, t.id)
+
+    # Pull log path from the most recent dispatched event.
+    log_path = None
+    for e in reversed(events):
+        if e.event_type == "dispatched" and e.payload_json:
+            try:
+                log_path = _json.loads(e.payload_json).get("log_path")
+                break
+            except Exception:
+                pass
+    if log_path:
+        console.print(f"  [bold]log[/bold]        {log_path}")
+
     if events:
         console.print(f"\n  [bold]Events ({len(events)}):[/bold]")
         for e in events:
@@ -202,6 +222,20 @@ def tasks_show(task_id: str) -> None:
                 f"    [dim]{e.created_at}[/dim]  {e.event_type}"
                 f"  [dim]({e.actor})[/dim]{pl}"
             )
+
+    if log_path and log_lines > 0 and os.path.exists(log_path):
+        try:
+            with open(log_path) as f:
+                lines = f.readlines()
+            tail = lines[-log_lines:]
+            if tail:
+                console.print(
+                    f"\n  [bold]Agent output (last {len(tail)} lines):[/bold]"
+                )
+                for line in tail:
+                    console.print(f"    {line.rstrip()}", highlight=False)
+        except OSError:
+            pass
     console.print()
 
 
@@ -215,6 +249,45 @@ def tasks_promote(task_id: str) -> None:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
     console.print(f"Promoted [cyan]{t.id}[/cyan] → ready")
+
+
+@tasks_app.command("diff")
+def tasks_diff(task_id: str) -> None:
+    """Show the git diff for a task's worktree (vs. its base branch)."""
+    import subprocess as _sub
+    conn = get_connection()
+    t = _require_task(conn, task_id)
+    if not t.worktree_path:
+        console.print("[dim]No worktree for this task.[/dim]")
+        raise typer.Exit(0)
+
+    # Show uncommitted + committed-on-task-branch vs main.
+    # Committed diff:
+    r = _sub.run(
+        ["git", "log", "--oneline", "main..HEAD"],
+        cwd=t.worktree_path, capture_output=True, text=True, timeout=15,
+    )
+    if r.stdout.strip():
+        console.print("[bold]Commits on this branch:[/bold]")
+        console.print(r.stdout)
+
+    # Uncommitted:
+    r = _sub.run(
+        ["git", "status", "--short"],
+        cwd=t.worktree_path, capture_output=True, text=True, timeout=15,
+    )
+    if r.stdout.strip():
+        console.print("[bold]Uncommitted:[/bold]")
+        console.print(r.stdout)
+
+    # Diff vs main (committed changes):
+    r = _sub.run(
+        ["git", "diff", "main...HEAD", "--stat"],
+        cwd=t.worktree_path, capture_output=True, text=True, timeout=15,
+    )
+    if r.stdout.strip():
+        console.print("[bold]Diff vs main (committed):[/bold]")
+        console.print(r.stdout)
 
 
 # ── hot-path verbs (attached to top-level app elsewhere) ─────────────────────
@@ -339,15 +412,245 @@ def cmd_dispatch(
     )
 
 
+def cmd_review(
+    project: Optional[str] = typer.Argument(None, help="Filter by project."),
+) -> None:
+    """List tasks awaiting review (typically auto-commit failures).
+
+    Use `agi tasks diff <id>` to inspect changes, `agi tasks show <id>` for
+    the event log and failure reason, then `agi approve <id>` or
+    `agi reject <id> --reason ...`.
+    """
+    conn = get_connection()
+    tasks = core.list_tasks(conn, project=project, status=TaskStatus.REVIEW.value)
+    if not tasks:
+        console.print("[dim]No tasks in review.[/dim]")
+        return
+
+    console.print(f"─── {len(tasks)} task(s) awaiting review ───\n")
+    for t in tasks:
+        console.print(
+            f"[cyan]{t.id}[/cyan]  [yellow]{t.status}[/yellow]  "
+            f"p{t.priority}  [bold]{t.title}[/bold]",
+        )
+        if t.worktree_path:
+            console.print(f"    [dim]worktree: {t.worktree_path}[/dim]")
+        # Show latest review_requested event reason if any.
+        events = core.list_events(conn, t.id)
+        for e in reversed(events):
+            if e.event_type == "review_requested" and e.payload_json:
+                import json as _j
+                try:
+                    p = _j.loads(e.payload_json)
+                    reason = p.get("reason", "?")
+                    err = p.get("error", "")
+                    console.print(f"    [dim]reason:[/dim] {reason}")
+                    if err:
+                        err_preview = err[:300].replace("\n", "\n      ")
+                        console.print(f"    [dim]error:[/dim] {err_preview}")
+                except Exception:
+                    pass
+                break
+        console.print()
+
+
+def cmd_approve(
+    task_id: str,
+) -> None:
+    """Approve a task in review → done."""
+    conn = get_connection()
+    try:
+        t = core.approve_review(conn, task_id)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"Approved [cyan]{t.id}[/cyan] → done")
+
+
+def cmd_reject(
+    task_id: str,
+    reason: str = typer.Option(..., "--reason", "-r"),
+) -> None:
+    """Reject a task in review → back to in_progress/ready."""
+    conn = get_connection()
+    try:
+        t = core.reject_review(conn, task_id, reason)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"Rejected [cyan]{t.id}[/cyan] → {t.status}")
+
+
+def cmd_watch(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="Project name or task id. Empty = watch all projects.",
+    ),
+    poll: float = typer.Option(5.0, "--poll", help="Poll interval in seconds."),
+) -> None:
+    """Tail meaningful task events in real-time.
+
+    Emits one line per semantic event (dispatched, progress, blocked, done,
+    review requested, auto-promotion). Skips low-signal noise like state
+    heartbeats, tool-call counts, session_orphaned transitions.
+
+    Ctrl-C to exit.
+    """
+    import json as _json
+    import signal
+    import time
+
+    SEMANTIC = {
+        "dispatched",
+        "progress",
+        "done",
+        "blocked",
+        "unblocked",
+        "review_requested",
+        "approved",
+        "rejected",
+        "ready",       # auto-promotion → dependent task unlocked
+        "reopened",
+    }
+
+    # Resolve target.
+    project_filter = None
+    task_filter = None
+    if target:
+        # Task ids start with 't-'; projects have any other shape.
+        conn = get_connection()
+        t = core.get_task(conn, target)
+        if t:
+            task_filter = target
+        else:
+            p = core.get_project(conn, target)
+            if p is None:
+                console.print(f"[red]No such project or task:[/red] {target}")
+                raise typer.Exit(1)
+            project_filter = p.id
+
+    # Prepare formatter and starting cursor.
+    def _fmt(event_type: str, task_id: str, title: str, payload: dict) -> str:
+        title = title[:40]
+        if event_type == "dispatched":
+            tmux = payload.get("tmux_target", "")
+            return f"[cyan]▶ dispatched[/cyan]    [bold]{task_id}[/bold] {title}  [dim]{tmux}[/dim]"
+        if event_type == "progress":
+            pct = payload.get("pct")
+            note = payload.get("note", "")[:80]
+            badge = f"{pct}%" if pct is not None else ""
+            return (
+                f"[green]· progress {badge}[/green]   "
+                f"[bold]{task_id}[/bold] {title}  [dim]{note}[/dim]"
+            )
+        if event_type == "done":
+            summary = payload.get("summary", "").split("\n")[0][:80]
+            commit = payload.get("commit", {})
+            sha = commit.get("sha", "")
+            sha_bit = f"[dim]@{sha}[/dim]" if sha else ""
+            return (
+                f"[bold green]✓ done[/bold green]          "
+                f"[bold]{task_id}[/bold] {title} {sha_bit}  [dim]{summary}[/dim]"
+            )
+        if event_type == "blocked":
+            reason = payload.get("reason", "?")
+            needs = payload.get("needs", "user")
+            return (
+                f"[bold red]⏸ blocked[/bold red]       "
+                f"[bold]{task_id}[/bold] {title}  "
+                f"[red]needs={needs}[/red]  [dim]{reason}[/dim]"
+            )
+        if event_type == "unblocked":
+            return f"[cyan]▶ unblocked[/cyan]     [bold]{task_id}[/bold] {title}"
+        if event_type == "review_requested":
+            reason = payload.get("reason", "?")
+            return (
+                f"[bold yellow]⚠ review[/bold yellow]        "
+                f"[bold]{task_id}[/bold] {title}  [dim]{reason}[/dim]"
+            )
+        if event_type == "approved":
+            return f"[bold green]✓ approved[/bold green]      [bold]{task_id}[/bold] {title}"
+        if event_type == "rejected":
+            return f"[bold red]✗ rejected[/bold red]      [bold]{task_id}[/bold] {title}"
+        if event_type == "ready":
+            trigger = payload.get("trigger", "")
+            trig = f" [dim](unblocked by {trigger})[/dim]" if trigger else ""
+            return f"[cyan]↑ ready[/cyan]         [bold]{task_id}[/bold] {title}{trig}"
+        if event_type == "reopened":
+            return f"[yellow]↻ reopened[/yellow]      [bold]{task_id}[/bold] {title}"
+        return f"{event_type}  {task_id} {title}"
+
+    placeholders = ",".join("?" for _ in SEMANTIC)
+    base_query = f"""
+        SELECT e.id, e.task_id, e.event_type, e.payload_json, e.created_at,
+               t.title, t.project_id
+          FROM task_events e
+          JOIN tasks t ON t.id = e.task_id
+         WHERE e.event_type IN ({placeholders})
+           AND e.id > ?
+    """
+    if project_filter:
+        base_query += " AND t.project_id = ?"
+    if task_filter:
+        base_query += " AND e.task_id = ?"
+    base_query += " ORDER BY e.id"
+
+    # Start from the latest existing event id so we don't dump history.
+    conn = get_connection()
+    row = conn.execute("SELECT MAX(id) as m FROM task_events").fetchone()
+    last_id = row["m"] or 0
+
+    header_target = task_filter or project_filter or "all projects"
+    console.print(f"[dim]watching {header_target}  [poll={poll}s]  ctrl-c to exit[/dim]")
+
+    stop = False
+
+    def _handle_sigint(*_):
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    while not stop:
+        try:
+            conn = get_connection()
+            args = list(SEMANTIC) + [last_id]
+            if project_filter:
+                args.append(project_filter)
+            if task_filter:
+                args.append(task_filter)
+            rows = conn.execute(base_query, args).fetchall()
+
+            for r in rows:
+                payload = {}
+                if r["payload_json"]:
+                    try:
+                        payload = _json.loads(r["payload_json"])
+                    except Exception:
+                        pass
+                line = _fmt(r["event_type"], r["task_id"], r["title"], payload)
+                console.print(line, highlight=False)
+                last_id = r["id"]
+        except Exception as e:
+            console.print(f"[dim red]watch error: {e}[/dim red]")
+
+        # Sleep in small slices so Ctrl-C is responsive.
+        slept = 0.0
+        while slept < poll and not stop:
+            time.sleep(min(0.3, poll - slept))
+            slept += 0.3
+
+
 def cmd_board(
     project: Optional[str] = typer.Argument(None),
+    all: bool = typer.Option(False, "--all", "-a", help="Include done tasks."),
 ) -> None:
-    """Kanban view grouped by status."""
+    """Kanban view grouped by status. Use --all to include done tasks."""
     conn = get_connection()
-    tasks = core.list_tasks(conn, project=project, include_closed=False)
+    tasks = core.list_tasks(conn, project=project, include_closed=all)
 
     if not tasks:
-        console.print("[dim]No open tasks.[/dim]")
+        console.print("[dim]No tasks.[/dim]")
         return
 
     # Group by status.
@@ -361,12 +664,18 @@ def cmd_board(
         TaskStatus.BLOCKED.value,
         TaskStatus.READY.value,
         TaskStatus.BACKLOG.value,
+        TaskStatus.DONE.value,
     ]
 
+    open_count = sum(1 for t in tasks if t.status != TaskStatus.DONE.value)
+    done_count = len(tasks) - open_count
     header = "─── board"
     if project:
         header += f": {project}"
-    header += f" · {len(tasks)} open ───"
+    header += f" · {open_count} open"
+    if done_count:
+        header += f" · {done_count} done"
+    header += " ───"
     console.print(header)
 
     for status in order:

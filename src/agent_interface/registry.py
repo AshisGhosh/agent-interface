@@ -83,6 +83,10 @@ def _is_stale(session: Session) -> bool:
         last = datetime.fromisoformat(session.last_seen_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return False
+    # Tolerate naive timestamps (e.g. from SQLite datetime('now')) by
+    # treating them as UTC. Mixing naive + aware would raise TypeError.
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - last).total_seconds()
     return age > STALE_THRESHOLD_SECONDS
 

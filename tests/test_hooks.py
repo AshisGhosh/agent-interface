@@ -43,7 +43,10 @@ def test_generate_hook_config():
     for event in HOOK_EVENTS:
         assert event in config
         assert len(config[event]) == 1
-        assert config[event][0]["hooks"][0]["command"] == "agi hook"
+        cmd = config[event][0]["hooks"][0]["command"]
+        # Command ends with "agi hook"; may be prefixed with an absolute
+        # path (preferred) or bare if `agi` isn't installed.
+        assert cmd.endswith("agi hook")
 
 
 # ── hook installation ────────────────────────────────────────────────────────

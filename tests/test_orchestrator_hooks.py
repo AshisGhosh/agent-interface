@@ -26,22 +26,67 @@ def test_session_start_no_task_returns_none(oconn):
     assert on_session_start("sess-1", "/tmp") is None
 
 
-def test_session_start_with_env_task_binds(oconn, monkeypatch):
+def test_session_start_with_env_task_promotes_to_in_progress(oconn, monkeypatch):
     core.create_project(oconn, "p1")
     t = core.add_task(oconn, "p1", "do the work")
+    # Simulate dispatch having already bound task to a placeholder.
+    oconn.execute(
+        "UPDATE tasks SET assigned_session_id=? WHERE id=?",
+        ("placeholder-abc", t.id),
+    )
+    oconn.commit()
     monkeypatch.setenv("AGI_TASK_ID", t.id)
 
-    result = on_session_start("sess-1", "/tmp")
+    result = on_session_start("claude-native-sid", "/tmp")
 
     assert result is not None
-    assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"
     assert t.id in result["hookSpecificOutput"]["additionalContext"]
     assert "do the work" in result["hookSpecificOutput"]["additionalContext"]
 
-    # Task should now be bound + in_progress.
+    # Task stays bound to the dispatch placeholder, now moved to in_progress.
     updated = core.get_task(oconn, t.id)
-    assert updated.assigned_session_id == "sess-1"
+    assert updated.assigned_session_id == "placeholder-abc"
     assert updated.status == TaskStatus.IN_PROGRESS
+
+
+def test_session_start_preserves_placeholder_identity(oconn, monkeypatch):
+    """Task stays bound to the dispatch placeholder across claude session
+    lifecycles. The placeholder holds stable tmux coordinates for jump."""
+    core.create_project(oconn, "p1")
+    t = core.add_task(oconn, "p1", "do the work")
+
+    # Simulate dispatch: placeholder session registered, task bound to it.
+    oconn.execute(
+        """INSERT INTO sessions
+           (id, state, is_managed, pid, cwd, tmux_session, tmux_window,
+            created_at, updated_at, last_seen_at)
+           VALUES (?, 'running', 1, NULL, '/tmp', '5', 't-task',
+                   datetime('now'), datetime('now'), datetime('now'))""",
+        ("dispatch-placeholder-id",),
+    )
+    oconn.execute(
+        "UPDATE tasks SET assigned_session_id=?, status='ready' WHERE id=?",
+        ("dispatch-placeholder-id", t.id),
+    )
+    oconn.commit()
+
+    monkeypatch.setenv("AGI_TASK_ID", t.id)
+
+    # Real agent session starts with a different id.
+    on_session_start("real-claude-session", "/tmp")
+
+    # Task still bound to placeholder, now in_progress.
+    updated = core.get_task(oconn, t.id)
+    assert updated.assigned_session_id == "dispatch-placeholder-id"
+    assert updated.status == TaskStatus.IN_PROGRESS
+
+    # Placeholder still exists with its tmux info intact.
+    ph = oconn.execute(
+        "SELECT tmux_session, tmux_window FROM sessions WHERE id=?",
+        ("dispatch-placeholder-id",),
+    ).fetchone()
+    assert ph["tmux_session"] == "5"
+    assert ph["tmux_window"] == "t-task"
 
 
 def test_session_start_finds_already_assigned_task(oconn):

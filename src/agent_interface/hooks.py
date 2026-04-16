@@ -94,13 +94,27 @@ def _find_by_pid_ancestry(conn: Any, pid: int) -> Optional[Session]:
 
 
 def _build_hook_entry() -> dict:
-    """Build a single hook entry pointing to `agi hook`."""
+    """Build a single hook entry pointing to the installed `agi hook`.
+
+    Uses the absolute path so Claude Code's hook invocation doesn't land on a
+    different `agi` earlier in PATH (e.g. a project-local .venv shim running
+    stale code).
+    """
+    import shutil as _sh
+    agi_path = _sh.which("agi") or "agi"
+    # Prefer the globally-installed uv tool bin over any project venv that
+    # happens to be earlier in PATH, so hook events always run the latest
+    # installed code.
+    for candidate in ("/home/ashis/.local/bin/agi", str(Path.home() / ".local" / "bin" / "agi")):
+        if Path(candidate).exists():
+            agi_path = candidate
+            break
     return {
         "matcher": "",
         "hooks": [
             {
                 "type": "command",
-                "command": "agi hook",
+                "command": f"{agi_path} hook",
             }
         ],
     }
