@@ -968,6 +968,83 @@ def reap_orphaned_tasks(conn: sqlite3.Connection) -> list[str]:
     return reaped
 
 
+def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Hard-delete a task and its dependency / event / note rows.
+
+    Returns True if a row was deleted. Refuses to delete a task that has
+    other tasks depending on it — the caller should resolve those first.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return False
+
+    dependents = conn.execute(
+        "SELECT task_id FROM task_deps WHERE depends_on_task_id=?",
+        (task_id,),
+    ).fetchall()
+    if dependents:
+        raise ValueError(
+            f"Cannot delete {task_id}: other tasks depend on it"
+            f" ({', '.join(r['task_id'] for r in dependents)})"
+        )
+
+    conn.execute("DELETE FROM task_notes WHERE task_id=?", (task_id,))
+    conn.execute("DELETE FROM task_events WHERE task_id=?", (task_id,))
+    conn.execute("DELETE FROM task_deps WHERE task_id=?", (task_id,))
+    conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.commit()
+    return True
+
+
+def update_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    priority: Optional[int] = None,
+    assigned_session_id: Optional[str] = None,
+    clear_assignment: bool = False,
+    actor: str = "user",
+) -> Task:
+    """Update non-status task fields (priority, assignment).
+
+    Status changes go through the dedicated transition helpers (promote,
+    block_task, unblock_task, done_task, reopen_task).
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"No such task: {task_id}")
+
+    sets: list[str] = []
+    args: list[object] = []
+    payload: dict = {}
+
+    if priority is not None:
+        sets.append("priority=?")
+        args.append(priority)
+        payload["priority"] = priority
+
+    if clear_assignment:
+        sets.append("assigned_session_id=?")
+        args.append(None)
+        payload["assigned_session_id"] = None
+    elif assigned_session_id is not None:
+        sets.append("assigned_session_id=?")
+        args.append(assigned_session_id)
+        payload["assigned_session_id"] = assigned_session_id
+
+    if not sets:
+        return task
+
+    sets.append("updated_at=?")
+    args.append(_now_utc())
+    args.append(task_id)
+
+    conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", args)
+    _append_event(conn, task_id, "updated", actor=actor, payload=payload)
+    conn.commit()
+    return get_task(conn, task_id)  # type: ignore[return-value]
+
+
 def reopen_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str = "user",
 ) -> Task:
@@ -988,72 +1065,3 @@ def reopen_task(
     return get_task(conn, task_id)  # type: ignore[return-value]
 
 
-def delete_task(conn: sqlite3.Connection, task_id: str) -> None:
-    """Hard-delete a task and all its related rows.
-
-    Refuses to delete a task that is a parent of other tasks, so callers
-    can't orphan children silently.
-    """
-    task = get_task(conn, task_id)
-    if task is None:
-        raise ValueError(f"No such task: {task_id}")
-
-    children = conn.execute(
-        "SELECT id FROM tasks WHERE parent_id=?", (task_id,),
-    ).fetchall()
-    if children:
-        raise ValueError(
-            f"Cannot delete task with {len(children)} child task(s): {task_id}",
-        )
-
-    conn.execute("DELETE FROM task_deps WHERE task_id=? OR depends_on_task_id=?",
-                 (task_id, task_id))
-    conn.execute("DELETE FROM task_events WHERE task_id=?", (task_id,))
-    conn.execute("DELETE FROM task_notes WHERE task_id=?", (task_id,))
-    conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
-    conn.commit()
-
-
-def update_task_fields(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    priority: Optional[int] = None,
-    assigned_session_id: Optional[str] = None,
-    clear_assignment: bool = False,
-    actor: str = "user",
-) -> Task:
-    """Patch priority and/or assigned_session_id on a task.
-
-    Pass `clear_assignment=True` to unset the session. Status transitions go
-    through the dedicated functions (promote/block/unblock/done/reopen).
-    """
-    task = get_task(conn, task_id)
-    if task is None:
-        raise ValueError(f"No such task: {task_id}")
-
-    changes: dict = {}
-    if priority is not None and priority != task.priority:
-        conn.execute("UPDATE tasks SET priority=? WHERE id=?", (priority, task_id))
-        changes["priority"] = priority
-    if clear_assignment:
-        if task.assigned_session_id is not None:
-            conn.execute(
-                "UPDATE tasks SET assigned_session_id=NULL WHERE id=?", (task_id,),
-            )
-            changes["assigned_session_id"] = None
-    elif assigned_session_id is not None and assigned_session_id != task.assigned_session_id:
-        conn.execute(
-            "UPDATE tasks SET assigned_session_id=? WHERE id=?",
-            (assigned_session_id, task_id),
-        )
-        changes["assigned_session_id"] = assigned_session_id
-
-    if changes:
-        conn.execute(
-            "UPDATE tasks SET updated_at=? WHERE id=?", (_now_utc(), task_id),
-        )
-        _append_event(conn, task_id, "updated", actor=actor, payload=changes)
-        conn.commit()
-
-    return get_task(conn, task_id)  # type: ignore[return-value]
