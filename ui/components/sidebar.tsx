@@ -1,13 +1,27 @@
+"use client";
+
 import { Folder, LayoutGrid } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import type { Project } from "@/lib/types";
 
-type Project = { id: string; name: string };
+interface SidebarProps {
+  projects: Project[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  loading?: boolean;
+  error?: string | null;
+  className?: string;
+}
 
-// Placeholder — real data comes from the FastAPI /projects endpoint once wired.
-const projects: Project[] = [];
-
-export function Sidebar({ className }: { className?: string }) {
+export function Sidebar({
+  projects,
+  selectedId,
+  onSelect,
+  loading,
+  error,
+  className,
+}: SidebarProps) {
   return (
     <aside
       className={cn(
@@ -23,20 +37,37 @@ export function Sidebar({ className }: { className?: string }) {
         <div className="px-2 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Projects
         </div>
-        {projects.length === 0 ? (
+        {loading ? (
+          <p className="px-2 py-3 text-sm text-muted-foreground">Loading…</p>
+        ) : error ? (
+          <p className="px-2 py-3 text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : projects.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">
             No projects yet.
           </p>
         ) : (
           <ul className="space-y-0.5">
-            {projects.map((p) => (
-              <li key={p.id}>
-                <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground">
-                  <Folder className="h-4 w-4" aria-hidden="true" />
-                  <span className="truncate">{p.name}</span>
-                </button>
-              </li>
-            ))}
+            {projects.map((p) => {
+              const active = p.id === selectedId;
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(p.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground",
+                      active && "bg-accent text-accent-foreground",
+                    )}
+                  >
+                    <Folder className="h-4 w-4" aria-hidden="true" />
+                    <span className="truncate">{p.name}</span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </nav>
