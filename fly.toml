@@ -1,0 +1,44 @@
+# fly.io config for agi — single-container deploy.
+#
+# First-time setup (from the repo root):
+#
+#   fly launch --no-deploy --copy-config --name <your-app-name>
+#   fly volumes create agi_data --size 1 --region iad
+#   fly deploy
+#
+# The app reads $AGI_DB_PATH, which points into the mounted volume so the
+# SQLite registry survives restarts and machine migrations.
+
+app = "agent-interface"
+primary_region = "iad"
+
+[build]
+
+[env]
+  AGI_DB_PATH = "/data/registry.db"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/projects"
+
+[[mounts]]
+  source = "agi_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

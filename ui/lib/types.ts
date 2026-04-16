@@ -45,13 +45,3 @@ export interface TaskPatch {
   block_needs?: string;
   done_summary?: string;
 }
-
-export interface TaskCreate {
-  project: string;
-  title: string;
-  description?: string | null;
-  priority?: number;
-  tags?: string[];
-  depends_on?: string[];
-  parent_id?: string | null;
-}

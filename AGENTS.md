@@ -31,6 +31,7 @@ The CLI is `agi`. There is no second binary.
 
 - [README.md](README.md) — session-registry product vision and CLI surface.
 - [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) — orchestrator design doc, including data model, status machine, slice plan, and open questions.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — single-container (fly.io) and split (Vercel+fly) deploy paths.
 - [src/agent_interface/orchestrator/](src/agent_interface/orchestrator/) — orchestrator implementation.
 
 ## For agents working in this repo

@@ -7,7 +7,6 @@ import { User } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import type { Task } from "@/lib/types";
 
@@ -22,46 +21,21 @@ interface TaskCardProps {
   task: Task;
   dragging?: boolean;
   className?: string;
-  selected?: boolean;
-  onToggleSelected?: (id: string) => void;
-  selectable?: boolean;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
-  function TaskCard(
-    { task, dragging, className, selected, onToggleSelected, selectable },
-    ref,
-  ) {
+  function TaskCard({ task, dragging, className }, ref) {
     return (
       <Card
         ref={ref}
-        data-selected={selected ? "true" : undefined}
         className={cn(
           "select-none space-y-2 p-3 text-sm shadow-sm transition-shadow",
           dragging && "opacity-60",
-          selected && "ring-2 ring-primary",
           className,
         )}
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-start gap-2">
-            {selectable && (
-              <span
-                data-no-drag="true"
-                onPointerDownCapture={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-                className="mt-0.5"
-              >
-                <Checkbox
-                  checked={!!selected}
-                  onCheckedChange={() => onToggleSelected?.(task.id)}
-                  aria-label={`select ${task.id}`}
-                />
-              </span>
-            )}
-            <span className="font-mono text-xs text-muted-foreground">{task.id}</span>
-          </div>
+          <span className="font-mono text-xs text-muted-foreground">{task.id}</span>
           <Badge variant={priorityVariant(task.priority)} className="shrink-0">
             p{task.priority}
           </Badge>
@@ -92,19 +66,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
   },
 );
 
-interface SortableTaskCardProps {
-  task: Task;
-  selected?: boolean;
-  onToggleSelected?: (id: string) => void;
-  selectable?: boolean;
-}
-
-export function SortableTaskCard({
-  task,
-  selected,
-  onToggleSelected,
-  selectable,
-}: SortableTaskCardProps) {
+export function SortableTaskCard({ task }: { task: Task }) {
   const {
     attributes,
     listeners,
@@ -121,13 +83,7 @@ export function SortableTaskCard({
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <TaskCard
-        task={task}
-        dragging={isDragging}
-        selected={selected}
-        onToggleSelected={onToggleSelected}
-        selectable={selectable}
-      />
+      <TaskCard task={task} dragging={isDragging} />
     </div>
   );
 }

@@ -1,0 +1,23 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+*.db
+
+# Built UI output (rebuilt in-image) and local node_modules
+ui/node_modules
+ui/.next
+ui/out
+
+# Dev tooling / docs that aren't needed at runtime
+tests
+docs
+*.md
+!README.md
+fly.toml
+Dockerfile
+.dockerignore
