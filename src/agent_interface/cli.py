@@ -593,5 +593,27 @@ def cmd_dashboard() -> None:
         console.print("[red]Failed. Check Telegram config.[/red]")
 
 
+# ── orchestrator integration ─────────────────────────────────────────────────
+
+from agent_interface.orchestrator import cli as _orch_cli  # noqa: E402
+
+app.add_typer(_orch_cli.projects_app, name="projects")
+app.add_typer(_orch_cli.tasks_app, name="tasks")
+app.command("next")(_orch_cli.cmd_next)
+app.command("progress")(_orch_cli.cmd_progress)
+app.command("block")(_orch_cli.cmd_block)
+app.command("unblock")(_orch_cli.cmd_unblock)
+app.command("done")(_orch_cli.cmd_done)
+app.command("board")(_orch_cli.cmd_board)
+
+
+@app.command("mcp", hidden=True)
+def cmd_mcp() -> None:
+    """Run the orchestrator MCP server on stdio (agent-facing)."""
+    from agent_interface.orchestrator.mcp_server import run
+
+    run()
+
+
 def main() -> None:
     app()

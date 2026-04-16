@@ -248,6 +248,33 @@ def _try_update_dashboard() -> None:
         pass
 
 
+def _orchestrator_on_start(session_id: str, cwd: str | None) -> None:
+    """Best-effort SessionStart hook into the orchestrator.
+
+    Writes Claude Code-compatible JSON to stdout if there's assignment
+    context to inject. Silent on failure.
+    """
+    try:
+        from agent_interface.orchestrator.hooks import on_session_start
+
+        payload = on_session_start(session_id, cwd)
+        if payload:
+            sys.stdout.write(json.dumps(payload))
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _orchestrator_on_end(session_id: str) -> None:
+    """Best-effort SessionEnd hook into the orchestrator."""
+    try:
+        from agent_interface.orchestrator.hooks import on_session_end
+
+        on_session_end(session_id)
+    except Exception:
+        pass
+
+
 def process_hook(payload: dict) -> str:
     """Process a hook event payload from stdin.
 
@@ -292,6 +319,10 @@ def process_hook(payload: dict) -> str:
         conn.commit()
         if event_name == "Stop":
             _try_notify(session_id, payload.get("transcript_path"))
+        if event_name == "SessionStart":
+            _orchestrator_on_start(session_id, cwd)
+        elif event_name == "SessionEnd":
+            _orchestrator_on_end(session_id)
         return f"adopted: {scan_match.id} → {session_id} ({target_state.value})"
 
     existing = get_session(conn, session_id)
@@ -308,6 +339,10 @@ def process_hook(payload: dict) -> str:
         register_session(conn, session)
         if event_name == "Stop":
             _try_notify(session_id, payload.get("transcript_path"))
+        if event_name == "SessionStart":
+            _orchestrator_on_start(session_id, cwd)
+        elif event_name == "SessionEnd":
+            _orchestrator_on_end(session_id)
         return f"registered: {session_id} ({target_state.value})"
 
     # For heartbeat-only events, update last_seen + tool info.
@@ -330,6 +365,11 @@ def process_hook(payload: dict) -> str:
     # Deduplicate: skip if we already notified for this session recently.
     if event_name == "Stop":
         _try_notify(session_id, payload.get("transcript_path"))
+
+    if event_name == "SessionStart":
+        _orchestrator_on_start(session_id, cwd)
+    elif event_name == "SessionEnd":
+        _orchestrator_on_end(session_id)
 
     return f"updated: {session_id} → {target_state.value}"
 

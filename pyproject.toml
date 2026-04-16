@@ -3,7 +3,7 @@ name = "agent-interface"
 version = "0.1.0"
 description = "A remote-first control plane for Claude Code sessions"
 requires-python = ">=3.11"
-dependencies = ["typer>=0.9"]
+dependencies = ["typer>=0.9", "mcp>=1.0"]
 
 [project.scripts]
 agi = "agent_interface.cli:main"

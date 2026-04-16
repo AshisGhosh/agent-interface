@@ -465,6 +465,8 @@ def _resolve_tmux_target(pid: int) -> Optional[str]:
 
 def send_to_tmux(tmux_target: str, text: str) -> tuple[bool, str]:
     """Type text into a tmux pane. Returns (success, debug_info)."""
+    # Collapse newlines — tmux send-keys treats them as literal newlines.
+    text = " ".join(line.strip() for line in text.splitlines() if line.strip())
     result = subprocess.run(
         ["tmux", "send-keys", "-t", tmux_target, text, "Enter"],
         capture_output=True, text=True, check=False,
