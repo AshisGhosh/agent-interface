@@ -18,7 +18,7 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 
-import { listProjectTasks, patchTask } from "@/lib/api";
+import { deleteTask, dispatchAgents, listProjectTasks, patchTask } from "@/lib/api";
 import type { Task, TaskStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -27,8 +27,10 @@ import {
   COLUMN_ID_PREFIX,
   COLUMNS,
 } from "@/components/board-column";
+import { NewTaskDialog } from "@/components/new-task-dialog";
 import { TaskCard } from "@/components/task-card";
 import { TaskDetailSheet } from "@/components/task-detail-sheet";
+import { Button } from "@/components/ui/button";
 
 type TasksByStatus = Record<TaskStatus, Task[]>;
 
@@ -90,6 +92,8 @@ export function Board({ projectId, className }: BoardProps) {
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [dispatching, setDispatching] = useState(false);
 
   // Snapshot of the per-status arrays when drag started, so we can diff
   // priorities on drop and only PATCH tasks that actually moved.
@@ -120,6 +124,65 @@ export function Board({ projectId, className }: BoardProps) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // "n" shortcut for new task
+  useEffect(() => {
+    if (!projectId) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "n" && e.key !== "N") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      setNewTaskOpen(true);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [projectId]);
+
+  const readyCount = tasksByStatus.ready?.length ?? 0;
+
+  const onDispatch = useCallback(async () => {
+    if (!projectId || readyCount === 0) return;
+    const input = prompt(
+      `Dispatch how many agents? (${readyCount} ready)`,
+      String(Math.min(readyCount, 4)),
+    );
+    if (!input) return;
+    const n = parseInt(input, 10);
+    if (isNaN(n) || n < 1) return;
+    setDispatching(true);
+    try {
+      const result = await dispatchAgents(projectId, n);
+      alert(`Dispatched ${result.dispatched} agent(s).`);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDispatching(false);
+    }
+  }, [projectId, readyCount, refresh]);
+
+  const onDeleteTask = useCallback(
+    async (taskId: string) => {
+      if (!confirm(`Delete task ${taskId}?`)) return;
+      try {
+        await deleteTask(taskId);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refresh],
+  );
+
+  const allTasks = useMemo(() => {
+    const out: Task[] = [];
+    for (const key of Object.keys(tasksByStatus) as TaskStatus[]) {
+      out.push(...tasksByStatus[key]);
+    }
+    return out;
+  }, [tasksByStatus]);
 
   const activeTask = useMemo(() => {
     if (!activeId) return null;
@@ -302,11 +365,35 @@ export function Board({ projectId, className }: BoardProps) {
             </span>
           )}
         </div>
-        {projectId && (
-          <span className="font-mono text-xs text-muted-foreground">
-            {projectId}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {projectId && (
+            <span className="font-mono text-xs text-muted-foreground">
+              {projectId}
+            </span>
+          )}
+          {projectId && (
+            <>
+              <Button
+                size="sm"
+                onClick={() => setNewTaskOpen(true)}
+                title="Add task (n)"
+              >
+                + New task
+              </Button>
+              {readyCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onDispatch}
+                  disabled={dispatching}
+                  title={`Dispatch agents on ${readyCount} ready task(s)`}
+                >
+                  {dispatching ? "Dispatching…" : `Dispatch (${readyCount} ready)`}
+                </Button>
+              )}
+            </>
+          )}
+        </div>
       </header>
       {!projectId ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -342,6 +429,13 @@ export function Board({ projectId, className }: BoardProps) {
         onOpenChange={(o) => {
           if (!o) setOpenTaskId(null);
         }}
+      />
+      <NewTaskDialog
+        open={newTaskOpen}
+        onOpenChange={setNewTaskOpen}
+        projectId={projectId}
+        existingTasks={allTasks}
+        onCreated={() => void refresh()}
       />
     </section>
   );
