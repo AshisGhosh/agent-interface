@@ -25,6 +25,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "blocked", label: "Blocked", tone: "text-rose-600" },
   { key: "ready", label: "Ready", tone: "text-sky-600" },
   { key: "backlog", label: "Backlog", tone: "text-muted-foreground" },
+  { key: "done", label: "Done", tone: "text-muted-foreground/60" },
 ];
 
 interface BoardColumnProps {

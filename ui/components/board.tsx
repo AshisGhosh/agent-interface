@@ -108,7 +108,7 @@ export function Board({ projectId, className }: BoardProps) {
     setLoading(true);
     setError(null);
     try {
-      const tasks = await listProjectTasks(projectId);
+      const tasks = await listProjectTasks(projectId, { includeClosed: true });
       setTasksByStatus(groupByStatus(tasks));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
