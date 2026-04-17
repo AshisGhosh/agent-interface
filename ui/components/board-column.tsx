@@ -45,7 +45,7 @@ export function BoardColumn({ column, tasks, onOpenTask }: BoardColumnProps) {
   return (
     <div
       className={cn(
-        "flex w-72 shrink-0 flex-col rounded-lg border bg-card",
+        "flex w-[17rem] shrink-0 flex-col rounded-lg border bg-card sm:w-72",
         isOver && "ring-2 ring-ring/60",
       )}
     >

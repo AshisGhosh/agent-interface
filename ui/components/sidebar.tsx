@@ -5,34 +5,31 @@ import { Folder, LayoutGrid } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Project } from "@/lib/types";
 
-interface SidebarProps {
+interface SidebarContentProps {
   projects: Project[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading?: boolean;
   error?: string | null;
-  className?: string;
+  showHeader?: boolean;
 }
 
-export function Sidebar({
+export function SidebarContent({
   projects,
   selectedId,
   onSelect,
   loading,
   error,
-  className,
-}: SidebarProps) {
+  showHeader = true,
+}: SidebarContentProps) {
   return (
-    <aside
-      className={cn(
-        "flex h-full w-64 shrink-0 flex-col border-r bg-muted/20",
-        className,
+    <>
+      {showHeader && (
+        <div className="flex h-14 items-center gap-2 border-b px-4">
+          <LayoutGrid className="h-5 w-5" aria-hidden="true" />
+          <span className="text-sm font-semibold">agi</span>
+        </div>
       )}
-    >
-      <div className="flex h-14 items-center gap-2 border-b px-4">
-        <LayoutGrid className="h-5 w-5" aria-hidden="true" />
-        <span className="text-sm font-semibold">agi</span>
-      </div>
       <nav className="flex-1 overflow-y-auto p-2">
         <div className="px-2 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Projects
@@ -71,6 +68,23 @@ export function Sidebar({
           </ul>
         )}
       </nav>
+    </>
+  );
+}
+
+interface SidebarProps extends SidebarContentProps {
+  className?: string;
+}
+
+export function Sidebar({ className, ...contentProps }: SidebarProps) {
+  return (
+    <aside
+      className={cn(
+        "hidden h-full w-64 shrink-0 flex-col border-r bg-muted/20 md:flex",
+        className,
+      )}
+    >
+      <SidebarContent {...contentProps} />
     </aside>
   );
 }

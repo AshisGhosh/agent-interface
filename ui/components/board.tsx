@@ -17,6 +17,7 @@ import {
   arrayMove,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
+import { Menu } from "lucide-react";
 
 import { deleteTask, dispatchAgents, listProjectTasks, patchTask } from "@/lib/api";
 import type { Task, TaskStatus } from "@/lib/types";
@@ -83,9 +84,10 @@ function resolveContainer(
 export interface BoardProps {
   projectId: string | null;
   className?: string;
+  onOpenMobileNav?: () => void;
 }
 
-export function Board({ projectId, className }: BoardProps) {
+export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
   const [tasksByStatus, setTasksByStatus] =
     useState<TasksByStatus>(EMPTY_BY_STATUS);
   const [loading, setLoading] = useState(false);
@@ -352,22 +354,37 @@ export function Board({ projectId, className }: BoardProps) {
   }, []);
 
   return (
-    <section className={cn("flex h-full flex-col", className)}>
-      <header className="flex h-14 items-center justify-between border-b px-6">
-        <div className="flex items-center gap-3">
+    <section className={cn("flex h-full min-w-0 flex-col", className)}>
+      <header className="flex h-14 items-center justify-between gap-2 border-b px-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          {onOpenMobileNav && (
+            <button
+              type="button"
+              onClick={onOpenMobileNav}
+              aria-label="Open navigation"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:hidden"
+            >
+              <Menu className="h-5 w-5" aria-hidden="true" />
+            </button>
+          )}
           <h1 className="text-sm font-semibold">Board</h1>
           {loading && (
-            <span className="text-xs text-muted-foreground">Loading…</span>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              Loading…
+            </span>
           )}
           {error && (
-            <span className="text-xs text-destructive" role="alert">
+            <span
+              className="truncate text-xs text-destructive"
+              role="alert"
+            >
               {error}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {projectId && (
-            <span className="font-mono text-xs text-muted-foreground">
+            <span className="hidden font-mono text-xs text-muted-foreground lg:inline">
               {projectId}
             </span>
           )}
@@ -378,7 +395,8 @@ export function Board({ projectId, className }: BoardProps) {
                 onClick={() => setNewTaskOpen(true)}
                 title="Add task (n)"
               >
-                + New task
+                <span className="hidden sm:inline">+ New task</span>
+                <span className="sm:hidden">+ New</span>
               </Button>
               {readyCount > 0 && (
                 <Button
@@ -388,7 +406,18 @@ export function Board({ projectId, className }: BoardProps) {
                   disabled={dispatching}
                   title={`Dispatch agents on ${readyCount} ready task(s)`}
                 >
-                  {dispatching ? "Dispatching…" : `Dispatch (${readyCount} ready)`}
+                  {dispatching ? (
+                    "Dispatching…"
+                  ) : (
+                    <>
+                      <span className="hidden sm:inline">
+                        Dispatch ({readyCount} ready)
+                      </span>
+                      <span className="sm:hidden">
+                        Dispatch ({readyCount})
+                      </span>
+                    </>
+                  )}
                 </Button>
               )}
             </>
@@ -408,7 +437,7 @@ export function Board({ projectId, className }: BoardProps) {
           onDragEnd={onDragEnd}
           onDragCancel={onDragCancel}
         >
-          <div className="flex flex-1 gap-4 overflow-x-auto p-6">
+          <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-3 sm:gap-4 sm:p-6">
             {COLUMNS.map((col) => (
               <BoardColumn
                 key={col.key}

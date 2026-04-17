@@ -79,7 +79,7 @@ function SheetHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
   return (
     <div
       className={cn(
-        "flex flex-col gap-1 border-b px-6 py-4 text-left",
+        "flex flex-col gap-1 border-b px-4 py-3 text-left sm:px-6 sm:py-4",
         className,
       )}
       {...props}
@@ -91,7 +91,7 @@ function SheetFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
   return (
     <div
       className={cn(
-        "flex flex-col-reverse gap-2 border-t px-6 py-4 sm:flex-row sm:justify-end",
+        "flex flex-col-reverse gap-2 border-t px-4 py-3 sm:flex-row sm:justify-end sm:px-6 sm:py-4",
         className,
       )}
       {...props}
