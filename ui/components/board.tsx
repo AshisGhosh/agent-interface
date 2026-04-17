@@ -31,7 +31,14 @@ import {
 import { NewTaskDialog } from "@/components/new-task-dialog";
 import { TaskCard } from "@/components/task-card";
 import { TaskDetailSheet } from "@/components/task-detail-sheet";
+import {
+  EMPTY_FILTERS,
+  TaskFilterBar,
+  type TaskFilters,
+  filtersActive,
+} from "@/components/task-filter-bar";
 import { Button } from "@/components/ui/button";
+import { matchTask } from "@/lib/fuzzy";
 
 type TasksByStatus = Record<TaskStatus, Task[]>;
 
@@ -96,6 +103,7 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [dispatching, setDispatching] = useState(false);
+  const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
 
   // Snapshot of the per-status arrays when drag started, so we can diff
   // priorities on drop and only PATCH tasks that actually moved.
@@ -185,6 +193,49 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
     }
     return out;
   }, [tasksByStatus]);
+
+  const availablePriorities = useMemo(() => {
+    const s = new Set<number>();
+    for (const t of allTasks) s.add(t.priority);
+    return Array.from(s).sort((a, b) => a - b);
+  }, [allTasks]);
+
+  const availableTags = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of allTasks) for (const tag of t.tags) s.add(tag);
+    return Array.from(s).sort();
+  }, [allTasks]);
+
+  // Which task IDs survive the active filters. Used as a visibility mask so
+  // DnD keeps operating on the full `tasksByStatus` source of truth while
+  // the board only renders matching cards.
+  const visibleIds = useMemo(() => {
+    if (!filtersActive(filters)) return null;
+    const ids = new Set<string>();
+    const q = filters.query.trim();
+    for (const t of allTasks) {
+      if (filters.priorities.size > 0 && !filters.priorities.has(t.priority)) {
+        continue;
+      }
+      if (filters.tags.size > 0 && !t.tags.some((tag) => filters.tags.has(tag))) {
+        continue;
+      }
+      if (q && matchTask(t, q) === null) continue;
+      ids.add(t.id);
+    }
+    return ids;
+  }, [allTasks, filters]);
+
+  const filteredByStatus = useMemo(() => {
+    if (visibleIds === null) return tasksByStatus;
+    const out = { ...EMPTY_BY_STATUS };
+    for (const key of Object.keys(tasksByStatus) as TaskStatus[]) {
+      out[key] = tasksByStatus[key].filter((t) => visibleIds.has(t.id));
+    }
+    return out;
+  }, [tasksByStatus, visibleIds]);
+
+  const matchedCount = visibleIds?.size ?? allTasks.length;
 
   const activeTask = useMemo(() => {
     if (!activeId) return null;
@@ -428,28 +479,39 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
           Select a project to view its board.
         </div>
       ) : (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={onDragStart}
-          onDragOver={onDragOver}
-          onDragEnd={onDragEnd}
-          onDragCancel={onDragCancel}
-        >
-          <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-3 sm:gap-4 sm:p-6">
-            {COLUMNS.map((col) => (
-              <BoardColumn
-                key={col.key}
-                column={col}
-                tasks={tasksByStatus[col.key] ?? []}
-                onOpenTask={(t) => setOpenTaskId(t.id)}
-              />
-            ))}
-          </div>
-          <DragOverlay>
-            {activeTask ? <TaskCard task={activeTask} /> : null}
-          </DragOverlay>
-        </DndContext>
+        <>
+          <TaskFilterBar
+            filters={filters}
+            onChange={setFilters}
+            availablePriorities={availablePriorities}
+            availableTags={availableTags}
+            matchedCount={matchedCount}
+            totalCount={allTasks.length}
+          />
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={onDragStart}
+            onDragOver={onDragOver}
+            onDragEnd={onDragEnd}
+            onDragCancel={onDragCancel}
+          >
+            <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-3 sm:gap-4 sm:p-6">
+              {COLUMNS.map((col) => (
+                <BoardColumn
+                  key={col.key}
+                  column={col}
+                  tasks={filteredByStatus[col.key] ?? []}
+                  totalCount={tasksByStatus[col.key]?.length ?? 0}
+                  onOpenTask={(t) => setOpenTaskId(t.id)}
+                />
+              ))}
+            </div>
+            <DragOverlay>
+              {activeTask ? <TaskCard task={activeTask} /> : null}
+            </DragOverlay>
+          </DndContext>
+        </>
       )}
       <TaskDetailSheet
         task={openTask}

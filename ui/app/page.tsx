@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Board } from "@/components/board";
-import { NewProjectDialog } from "@/components/new-project-dialog";
+import { HelpModal, useHelpHotkey } from "@/components/help-modal";
 import { Sidebar } from "@/components/sidebar";
 import { listProjects } from "@/lib/api";
 import type { Project } from "@/lib/types";
@@ -13,7 +13,9 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useHelpHotkey(useCallback(() => setHelpOpen(true), []));
 
   useEffect(() => {
     let cancelled = false;
@@ -38,29 +40,17 @@ export default function Home() {
     };
   }, []);
 
-  const handleProjectCreated = useCallback((project: Project) => {
-    setProjects((prev) =>
-      prev.some((p) => p.id === project.id) ? prev : [...prev, project],
-    );
-    setSelectedId(project.id);
-  }, []);
-
   return (
     <div className="flex h-screen">
       <Sidebar
         projects={projects}
         selectedId={selectedId}
         onSelect={setSelectedId}
-        onNewProject={() => setNewProjectOpen(true)}
         loading={loading}
         error={error}
       />
       <Board className="flex-1" projectId={selectedId} />
-      <NewProjectDialog
-        open={newProjectOpen}
-        onOpenChange={setNewProjectOpen}
-        onCreated={handleProjectCreated}
-      />
+      <HelpModal open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }
