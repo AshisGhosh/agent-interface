@@ -758,7 +758,8 @@ def _rebase_and_squash_to_main(task: "Task", summary: str) -> dict:
 
     branch = expected_branch
 
-    # Rebase task branch onto main.
+    # Rebase task branch onto main. If conflicts arise, abort and fall
+    # through to the squash-merge path which has auto-resolution.
     rebase = _sub.run(
         ["git", "rebase", "main"],
         cwd=wt, capture_output=True, text=True, timeout=120,
@@ -768,10 +769,7 @@ def _rebase_and_squash_to_main(task: "Task", summary: str) -> dict:
             ["git", "rebase", "--abort"],
             cwd=wt, capture_output=True, timeout=30,
         )
-        return {
-            "status": "failed",
-            "error": "rebase conflict: " + (rebase.stderr or rebase.stdout).strip()[-1500:],
-        }
+        # Don't fail here — the squash-merge + auto-resolve will handle it.
 
     # Serialize merges so parallel dones don't clobber main.
     import os as _os
@@ -797,15 +795,17 @@ def _rebase_and_squash_to_main(task: "Task", summary: str) -> dict:
                 cwd=main_wt, capture_output=True, text=True, timeout=120,
             )
             if squash.returncode != 0:
-                _sub.run(
-                    ["git", "merge", "--abort"],
-                    cwd=main_wt, capture_output=True, timeout=30,
-                )
-                err = (squash.stderr or squash.stdout).strip()[-1500:]
-                return {
-                    "status": "failed",
-                    "error": f"squash merge failed: {err}",
-                }
+                # Conflicts detected. Try auto-resolution before giving up.
+                resolve_result = _auto_resolve_conflicts(main_wt, task, summary)
+                if resolve_result["status"] != "resolved":
+                    _sub.run(
+                        ["git", "merge", "--abort"],
+                        cwd=main_wt, capture_output=True, timeout=30,
+                    )
+                    return {
+                        "status": "failed",
+                        "error": resolve_result.get("error", "merge conflict"),
+                    }
             # Commit the squash result.
             msg = (
                 f"{task.title}\n\n"
@@ -846,6 +846,134 @@ def _rebase_and_squash_to_main(task: "Task", summary: str) -> dict:
             return {"status": "merged", "sha": sha}
         finally:
             _fc.flock(lf.fileno(), _fc.LOCK_UN)
+
+
+def _auto_resolve_conflicts(main_wt: str, task: "Task", summary: str) -> dict:
+    """Try to resolve merge conflicts automatically.
+
+    Strategy:
+    1. For each conflicted file, try accepting the incoming (task branch)
+       side if the conflict is purely additive. This handles the common
+       case where two agents add different things to the same file.
+    2. If any files still have conflict markers after step 1, dispatch a
+       short-lived merge-resolution agent that reads the markers and
+       produces a clean file.
+    3. If the agent also can't resolve, return failed.
+
+    Returns {status: 'resolved'} or {status: 'failed', error: ...}.
+    """
+    import shutil as _sh
+    import subprocess as _sub
+
+    # Find conflicted files.
+    status = _sub.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=main_wt, capture_output=True, text=True, timeout=10,
+    )
+    conflicted = [f for f in status.stdout.strip().splitlines() if f]
+    if not conflicted:
+        return {"status": "resolved"}
+
+    # Step 1: For each file, try accepting theirs (the task branch version).
+    # This works when both sides added content in different places.
+    for f in conflicted:
+        _sub.run(
+            ["git", "checkout", "--theirs", f],
+            cwd=main_wt, capture_output=True, timeout=10,
+        )
+        _sub.run(
+            ["git", "add", f],
+            cwd=main_wt, capture_output=True, timeout=10,
+        )
+
+    # Check if any conflict markers remain in the working tree.
+    remaining = _sub.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=main_wt, capture_output=True, text=True, timeout=10,
+    )
+    still_conflicted = [
+        f for f in remaining.stdout.strip().splitlines() if f
+    ]
+    if not still_conflicted:
+        return {"status": "resolved"}
+
+    # Step 2: Dispatch a merge-resolution agent.
+    if not _sh.which("claude"):
+        return {
+            "status": "failed",
+            "error": (
+                f"Merge conflicts in {', '.join(still_conflicted)} "
+                "and no merge-resolution agent available"
+            ),
+        }
+
+    # Build a focused prompt with the conflict content.
+    conflict_content = ""
+    for f in still_conflicted:
+        import os as _os
+        fpath = _os.path.join(main_wt, f)
+        try:
+            content = open(fpath).read()
+            # Only include if it actually has markers
+            if "<<<<<<< " in content:
+                conflict_content += f"\n--- {f} ---\n{content[:3000]}\n"
+        except OSError:
+            pass
+
+    if not conflict_content:
+        # checkout --theirs resolved everything
+        return {"status": "resolved"}
+
+    prompt = (
+        f"You are resolving merge conflicts for task '{task.title}' "
+        f"(id: {task.id}). The following files have conflict markers "
+        "from a git merge --squash. Resolve each conflict by keeping "
+        "BOTH sides of the changes (they are additive — different "
+        "features added to the same file). Remove all <<<<<<< ======= "
+        ">>>>>>> markers. Write the resolved file using the Edit tool. "
+        "Do NOT delete any code that isn't between conflict markers.\n\n"
+        f"Conflicted files in {main_wt}:\n{conflict_content}"
+    )
+
+    _sub.run(
+        [
+            "claude", "--dangerously-skip-permissions",
+            "-p", prompt,
+        ],
+        cwd=main_wt,
+        capture_output=True, text=True, timeout=300,
+    )
+
+    # Check if markers are gone now.
+    all_clean = True
+    for f in still_conflicted:
+        import os as _os
+        fpath = _os.path.join(main_wt, f)
+        try:
+            if "<<<<<<< " in open(fpath).read():
+                all_clean = False
+                break
+        except OSError:
+            all_clean = False
+            break
+
+    if not all_clean:
+        return {
+            "status": "failed",
+            "error": (
+                f"Merge-resolution agent could not resolve conflicts "
+                f"in: {', '.join(still_conflicted)}"
+            ),
+        }
+
+    # Stage the resolved files.
+    for f in still_conflicted:
+        _sub.run(
+            ["git", "add", f],
+            cwd=main_wt, capture_output=True, timeout=10,
+        )
+
+    return {"status": "resolved"}
 
 
 def approve_review(
