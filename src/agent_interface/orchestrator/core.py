@@ -866,18 +866,32 @@ def approve_review(
 def reject_review(
     conn: sqlite3.Connection, task_id: str, reason: str, *, actor: str = "user",
 ) -> Task:
-    """Reject a task in review → back to in_progress (or ready if unassigned)."""
+    """Reject a task in review → ready (cleared for redispatch).
+
+    Always clears the session assignment and resets to ready. The old agent
+    is gone (its session ended, which is how the task reached review in the
+    first place). Keeping it in_progress with a dead session just creates
+    an orphan that needs manual cleanup.
+    """
     task = get_task(conn, task_id)
     if task is None:
         raise ValueError(f"No such task: {task_id}")
     if task.status != TaskStatus.REVIEW.value:
         raise ValueError(f"Task not in review: {task.status}")
 
-    new_status = (
-        TaskStatus.IN_PROGRESS.value if task.assigned_session_id
-        else TaskStatus.READY.value
+    now = _now_utc()
+    conn.execute(
+        """UPDATE tasks SET status=?, assigned_session_id=NULL,
+           updated_at=? WHERE id=?""",
+        (TaskStatus.READY.value, now, task_id),
     )
-    _set_status(conn, task_id, new_status)
+    # Close the managed session so it drops off `agi list`.
+    if task.assigned_session_id:
+        conn.execute(
+            """UPDATE sessions SET state='done', updated_at=?
+               WHERE id=? AND is_managed=1""",
+            (now, task.assigned_session_id),
+        )
     _append_event(
         conn, task_id, "rejected", actor=actor, payload={"reason": reason},
     )

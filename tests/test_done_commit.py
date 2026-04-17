@@ -130,7 +130,9 @@ def test_reject_review_returns_to_in_progress(oconn):
     oconn.commit()
 
     result = core.reject_review(oconn, t.id, reason="missed a file")
-    assert result.status == TaskStatus.IN_PROGRESS
+    # Reject always resets to ready and clears assignment (agent is dead).
+    assert result.status == TaskStatus.READY
+    assert result.assigned_session_id is None
 
 
 def test_reject_unassigned_returns_to_ready(oconn):

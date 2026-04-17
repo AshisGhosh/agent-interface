@@ -1,4 +1,4 @@
-import type { Project, Task, TaskPatch } from "@/lib/types";
+import type { Project, Task, TaskEvent, TaskPatch } from "@/lib/types";
 
 const API_BASE = "/api";
 
@@ -43,4 +43,11 @@ export async function patchTask(
     body: JSON.stringify(patch),
   });
   return handle<Task>(res);
+}
+
+export async function listTaskEvents(taskId: string): Promise<TaskEvent[]> {
+  const res = await fetch(`${API_BASE}/tasks/${taskId}/events`, {
+    cache: "no-store",
+  });
+  return handle<TaskEvent[]>(res);
 }

@@ -735,7 +735,8 @@ def _serve_dev(*, host: str, port: int, ui_dir: str, ui_port: int, reload: bool)
     )
 
     ui_proc = subprocess.Popen(
-        [npm, "run", "dev", "--", "--port", str(ui_port)],
+        [npm, "run", "dev", "--",
+         "--hostname", host, "--port", str(ui_port)],
         cwd=str(ui_path),
         env=env,
     )

@@ -70,3 +70,23 @@ class TaskEventOut(BaseModel):
     actor: str
     payload_json: Optional[str] = None
     created_at: str
+
+
+class DispatchRequest(BaseModel):
+    project: str = Field(..., description="Project id or name.")
+    n: int = Field(1, ge=1, le=20, description="Number of agents to spawn.")
+    worktree: bool = True
+    cwd: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class DispatchResultOut(BaseModel):
+    task_id: str
+    session_id: str
+    tmux_target: str
+    worktree_path: Optional[str] = None
+
+
+class DispatchResponse(BaseModel):
+    dispatched: int
+    agents: list[DispatchResultOut]

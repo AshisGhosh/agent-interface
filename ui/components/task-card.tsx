@@ -21,15 +21,31 @@ interface TaskCardProps {
   task: Task;
   dragging?: boolean;
   className?: string;
+  onClick?: () => void;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
-  function TaskCard({ task, dragging, className }, ref) {
+  function TaskCard({ task, dragging, className, onClick }, ref) {
     return (
       <Card
         ref={ref}
+        role={onClick ? "button" : undefined}
+        tabIndex={onClick ? 0 : undefined}
+        onClick={onClick}
+        onKeyDown={
+          onClick
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onClick();
+                }
+              }
+            : undefined
+        }
         className={cn(
           "select-none space-y-2 p-3 text-sm shadow-sm transition-shadow",
+          onClick &&
+            "cursor-pointer hover:shadow-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           dragging && "opacity-60",
           className,
         )}
@@ -66,7 +82,13 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
   },
 );
 
-export function SortableTaskCard({ task }: { task: Task }) {
+export function SortableTaskCard({
+  task,
+  onOpen,
+}: {
+  task: Task;
+  onOpen?: (task: Task) => void;
+}) {
   const {
     attributes,
     listeners,
@@ -83,7 +105,11 @@ export function SortableTaskCard({ task }: { task: Task }) {
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <TaskCard task={task} dragging={isDragging} />
+      <TaskCard
+        task={task}
+        dragging={isDragging}
+        onClick={onOpen ? () => onOpen(task) : undefined}
+      />
     </div>
   );
 }

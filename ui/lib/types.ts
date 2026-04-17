@@ -45,3 +45,12 @@ export interface TaskPatch {
   block_needs?: string;
   done_summary?: string;
 }
+
+export interface TaskEvent {
+  id: number | null;
+  task_id: string;
+  event_type: string;
+  actor: string;
+  payload_json: string | null;
+  created_at: string;
+}

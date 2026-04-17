@@ -32,6 +32,9 @@ from agent_interface.orchestrator.db import get_connection
 from agent_interface.orchestrator.models import Task, TaskEvent
 from agent_interface.orchestrator.states import TaskStatus
 from agent_interface.web.schemas import (
+    DispatchRequest,
+    DispatchResponse,
+    DispatchResultOut,
     ProjectCreate,
     ProjectOut,
     TaskCreate,
@@ -197,6 +200,38 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(e)) from e
         if not deleted:
             raise HTTPException(status_code=404, detail=f"No such task: {task_id}")
+
+    @app.post("/dispatch", response_model=DispatchResponse, status_code=200)
+    def dispatch_agents(body: DispatchRequest) -> DispatchResponse:
+        from agent_interface.orchestrator.dispatch import dispatch_project
+
+        # Default cwd to the repo root (where this package lives).
+        cwd = body.cwd
+        if not cwd:
+            cwd = str(Path(__file__).resolve().parent.parent.parent.parent)
+
+        try:
+            results = dispatch_project(
+                body.project,
+                body.n,
+                cwd=cwd,
+                worktree=body.worktree,
+                tags=body.tags if body.tags else None,
+            )
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return DispatchResponse(
+            dispatched=len(results),
+            agents=[
+                DispatchResultOut(
+                    task_id=r.task_id,
+                    session_id=r.session_id,
+                    tmux_target=r.tmux_target,
+                    worktree_path=r.worktree_path,
+                )
+                for r in results
+            ],
+        )
 
     @app.get("/tasks/{task_id}/events", response_model=list[TaskEventOut])
     def list_task_events(

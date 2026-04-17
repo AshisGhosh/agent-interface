@@ -28,6 +28,7 @@ import {
   COLUMNS,
 } from "@/components/board-column";
 import { TaskCard } from "@/components/task-card";
+import { TaskDetailSheet } from "@/components/task-detail-sheet";
 
 type TasksByStatus = Record<TaskStatus, Task[]>;
 
@@ -88,6 +89,7 @@ export function Board({ projectId, className }: BoardProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   // Snapshot of the per-status arrays when drag started, so we can diff
   // priorities on drop and only PATCH tasks that actually moved.
@@ -127,6 +129,15 @@ export function Board({ projectId, className }: BoardProps) {
     }
     return null;
   }, [activeId, tasksByStatus]);
+
+  const openTask = useMemo(() => {
+    if (!openTaskId) return null;
+    for (const status of Object.keys(tasksByStatus) as TaskStatus[]) {
+      const hit = tasksByStatus[status].find((t) => t.id === openTaskId);
+      if (hit) return hit;
+    }
+    return null;
+  }, [openTaskId, tasksByStatus]);
 
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
@@ -316,6 +327,7 @@ export function Board({ projectId, className }: BoardProps) {
                 key={col.key}
                 column={col}
                 tasks={tasksByStatus[col.key] ?? []}
+                onOpenTask={(t) => setOpenTaskId(t.id)}
               />
             ))}
           </div>
@@ -324,6 +336,13 @@ export function Board({ projectId, className }: BoardProps) {
           </DragOverlay>
         </DndContext>
       )}
+      <TaskDetailSheet
+        task={openTask}
+        open={openTaskId !== null}
+        onOpenChange={(o) => {
+          if (!o) setOpenTaskId(null);
+        }}
+      />
     </section>
   );
 }

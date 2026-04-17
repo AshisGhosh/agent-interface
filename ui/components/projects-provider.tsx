@@ -75,7 +75,7 @@ async function loadSummaries(
         let open = 0;
         for (const t of tasks) {
           byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
-          if (t.status !== "done" && t.status !== "cancelled") open += 1;
+          if (t.status !== "done") open += 1;
         }
         return [p.id, { total: tasks.length, open, byStatus }];
       } catch {
