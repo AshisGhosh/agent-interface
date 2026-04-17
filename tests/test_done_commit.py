@@ -10,6 +10,19 @@ from agent_interface.orchestrator.db import ensure_schema
 from agent_interface.orchestrator.states import TaskStatus
 
 
+@pytest.fixture(autouse=True)
+def _clean_git_env(monkeypatch):
+    """Strip GIT_* vars that leak in when pytest runs inside a `git commit`
+    pre-commit hook. Without this, `git init` in tmp_path is hijacked into
+    re-initializing the enclosing repo, and subsequent git calls target the
+    wrong repo."""
+    import os
+
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def oconn(conn):
     ensure_schema(conn)

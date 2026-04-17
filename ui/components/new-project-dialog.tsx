@@ -4,15 +4,16 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { useProjects } from "@/components/projects-provider";
+import { createProject } from "@/lib/api";
+import type { Project } from "@/lib/types";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCreated?: (project: Project) => void;
 };
 
-export function NewProjectDialog({ open, onOpenChange }: Props) {
-  const { createProject } = useProjects();
+export function NewProjectDialog({ open, onOpenChange, onCreated }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -43,15 +44,20 @@ export function NewProjectDialog({ open, onOpenChange }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
       setError("Name is required.");
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      await createProject(trimmed, description);
+      const trimmedDescription = description.trim();
+      const project = await createProject(
+        trimmedName,
+        trimmedDescription || undefined,
+      );
+      onCreated?.(project);
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
