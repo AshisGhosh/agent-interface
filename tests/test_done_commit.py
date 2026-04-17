@@ -37,6 +37,8 @@ def git_worktree(tmp_path: Path):
     sp.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
     sp.run(["git", "config", "user.email", "test@test"], cwd=repo, check=True)
     sp.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    # Disable hooks so the repo-level pre-commit doesn't fire inside tmp.
+    sp.run(["git", "config", "core.hooksPath", "/dev/null"], cwd=repo, check=True)
     (repo / "README.md").write_text("init\n")
     sp.run(["git", "add", "."], cwd=repo, check=True)
     sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -84,11 +86,10 @@ def test_done_without_changes_still_done(oconn, git_worktree):
 
 
 def test_done_commit_failure_moves_to_review(oconn, git_worktree):
-    """If a pre-commit hook fails, task goes to review with error payload."""
-    # Install a pre-commit hook that always fails.
-    hook = git_worktree / ".git" / "hooks" / "pre-commit"
-    hook.write_text("#!/bin/sh\necho 'forced failure' >&2\nexit 1\n")
-    hook.chmod(0o755)
+    """If git commit fails (e.g. lock, corrupt index), task goes to review."""
+    # Corrupt the index so `git commit` fails for a non-hook reason.
+    # (Hooks are skipped via --no-verify in the auto-commit path.)
+    (git_worktree / ".git" / "index.lock").write_text("locked")
 
     core.create_project(oconn, "p1")
     t = core.add_task(oconn, "p1", "thing")
@@ -107,7 +108,7 @@ def test_done_commit_failure_moves_to_review(oconn, git_worktree):
     events = core.list_events(oconn, t.id)
     review_events = [e for e in events if e.event_type == "review_requested"]
     assert len(review_events) == 1
-    assert "forced failure" in review_events[0].payload_json
+    assert "lock" in review_events[0].payload_json.lower()
 
 
 def test_done_no_worktree_just_marks_done(oconn):
