@@ -232,7 +232,6 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
         const overContainer = resolveContainer(overIdStr, prev);
         if (!activeContainer || !overContainer) return prev;
         if (activeContainer === overContainer) return prev;
-        if (overContainer === "done") return prev;
 
         const activeItems = prev[activeContainer];
         const overItems = prev[overContainer];
