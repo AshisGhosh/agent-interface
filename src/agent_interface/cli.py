@@ -678,6 +678,7 @@ def cmd_serve(
             host=host,
             port=port,
             reload=True,
+            reload_excludes=[".worktrees/*", "ui/*", ".venv/*", "*.pyc"],
             factory=True,
         )
     else:
@@ -755,6 +756,7 @@ def _serve_dev(*, host: str, port: int, ui_dir: str, ui_port: int, reload: bool)
                 host=host,
                 port=port,
                 reload=True,
+                reload_excludes=[".worktrees/*", "ui/*", ".venv/*", "*.pyc"],
                 factory=True,
             )
         else:
