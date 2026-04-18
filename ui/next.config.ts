@@ -9,10 +9,24 @@ const API_TARGET = process.env.AGI_API_URL ?? "http://localhost:8000";
 const nextConfig: NextConfig = {
   output: "export",
   images: { unoptimized: true },
-  // Merge of 10 agent branches produced some cross-branch TS friction.
-  // Unblocking the build; will tighten types in a follow-up.
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
+  // Prevent the dev-server file watcher from seeing agent worktrees.
+  // Each worktree has a ui/ copy that confuses webpack and corrupts .next.
+  webpack: (config, { dev }) => {
+    if (dev) {
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: [
+          "**/node_modules/**",
+          "**/.worktrees/**",
+          "**/.venv/**",
+          "**/.git/**",
+        ],
+      };
+    }
+    return config;
+  },
   async rewrites() {
     return [
       {
