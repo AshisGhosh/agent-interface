@@ -135,6 +135,48 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
     void refresh();
   }, [refresh]);
 
+  // Live-update progress_pct on cards when agents emit progress events.
+  // Status transitions still arrive via the refresh-after-mutation path;
+  // this listener is purely to keep the donut indicator fresh between loads.
+  useEffect(() => {
+    if (!projectId) return;
+    const es = new EventSource("/api/events/stream");
+    es.onmessage = (msg) => {
+      try {
+        const parsed = JSON.parse(msg.data) as {
+          task_id: string;
+          event_type: string;
+          payload: string | null;
+        };
+        if (parsed.event_type !== "progress") return;
+        if (!parsed.payload) return;
+        const payload = JSON.parse(parsed.payload) as { pct?: unknown };
+        if (typeof payload.pct !== "number") return;
+        const pct = payload.pct;
+        setTasksByStatus((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const key of Object.keys(next) as TaskStatus[]) {
+            const col = next[key];
+            const idx = col.findIndex((t) => t.id === parsed.task_id);
+            if (idx === -1) continue;
+            if (col[idx].progress_pct === pct) continue;
+            const updated = { ...col[idx], progress_pct: pct };
+            next[key] = [...col.slice(0, idx), updated, ...col.slice(idx + 1)];
+            changed = true;
+            break;
+          }
+          return changed ? next : prev;
+        });
+      } catch {
+        // heartbeats / prelude / malformed frames — ignore
+      }
+    };
+    return () => {
+      es.close();
+    };
+  }, [projectId]);
+
   // "n" shortcut for new task
   useEffect(() => {
     if (!projectId) return;

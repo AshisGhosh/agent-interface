@@ -3,6 +3,7 @@
 import { Folder, LayoutGrid, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { ThemeToggle } from "@/components/theme-toggle";
 import type { Project } from "@/lib/types";
 
 interface SidebarContentProps {
@@ -30,6 +31,9 @@ export function SidebarContent({
         <div className="flex h-14 items-center gap-2 border-b px-4">
           <LayoutGrid className="h-5 w-5" aria-hidden="true" />
           <span className="text-sm font-semibold">agi</span>
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </div>
       )}
       <nav className="flex-1 overflow-y-auto p-2">

@@ -128,7 +128,8 @@ def create_app(
             status=status,
             include_closed=include_closed,
         )
-        return [_task_to_out(t) for t in tasks]
+        pcts = core.latest_progress_pct(conn, [t.id for t in tasks])
+        return [_task_to_out(t, progress_pct=pcts.get(t.id)) for t in tasks]
 
     # ── tasks ────────────────────────────────────────────────────────────────
 
@@ -268,7 +269,7 @@ def create_app(
 
 # ── serialization helpers ────────────────────────────────────────────────────
 
-def _task_to_out(task: Task) -> TaskOut:
+def _task_to_out(task: Task, *, progress_pct: Optional[int] = None) -> TaskOut:
     return TaskOut(
         id=task.id,
         project_id=task.project_id,
@@ -287,6 +288,7 @@ def _task_to_out(task: Task) -> TaskOut:
         created_at=task.created_at,
         updated_at=task.updated_at,
         closed_at=task.closed_at,
+        progress_pct=progress_pct,
     )
 
 

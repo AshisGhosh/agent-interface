@@ -155,6 +155,25 @@ def test_progress_appends_event(oconn):
     assert events == ["created", "progress"]
 
 
+def test_latest_progress_pct_returns_most_recent(oconn):
+    core.create_project(oconn, "p1")
+    t1 = core.add_task(oconn, "p1", "a")
+    t2 = core.add_task(oconn, "p1", "b")
+    t3 = core.add_task(oconn, "p1", "c")
+
+    core.progress(oconn, t1.id, "start", pct=10)
+    core.progress(oconn, t1.id, "more", pct=55)
+    core.progress(oconn, t2.id, "note-only")  # no pct
+    # t3: no progress events at all
+
+    out = core.latest_progress_pct(oconn, [t1.id, t2.id, t3.id])
+    assert out == {t1.id: 55}
+
+
+def test_latest_progress_pct_empty_input(oconn):
+    assert core.latest_progress_pct(oconn, []) == {}
+
+
 def test_block_and_unblock(oconn):
     core.create_project(oconn, "p1")
     t = core.add_task(oconn, "p1", "x")

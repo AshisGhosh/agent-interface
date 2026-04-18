@@ -24,6 +24,7 @@ export interface Task {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  progress_pct: number | null;
 }
 
 export interface Project {

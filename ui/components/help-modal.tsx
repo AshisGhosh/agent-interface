@@ -21,8 +21,11 @@ interface Shortcut {
 }
 
 const SHORTCUTS: Shortcut[] = [
-  { keys: ["?"], description: "Show this help" },
+  { keys: ["?"], description: "Toggle this help" },
   { keys: ["n"], description: "New task (when a project is selected)" },
+  { keys: ["/"], description: "Focus the task search box" },
+  { keys: ["r"], description: "Refresh the board" },
+  { keys: ["c"], description: "Clear active filters" },
   { keys: ["Esc"], description: "Close dialog or sheet" },
 ];
 

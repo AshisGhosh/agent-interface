@@ -7,6 +7,7 @@ import { User } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { ProgressDonut } from "@/components/progress-donut";
 import { cn } from "@/lib/utils";
 import type { Task } from "@/lib/types";
 
@@ -52,9 +53,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
       >
         <div className="flex items-start justify-between gap-2">
           <span className="font-mono text-xs text-muted-foreground">{task.id}</span>
-          <Badge variant={priorityVariant(task.priority)} className="shrink-0">
-            p{task.priority}
-          </Badge>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {task.progress_pct != null && (
+              <ProgressDonut pct={task.progress_pct} />
+            )}
+            <Badge variant={priorityVariant(task.priority)}>
+              p{task.priority}
+            </Badge>
+          </div>
         </div>
         <div className="font-medium leading-snug text-foreground">
           {task.title}

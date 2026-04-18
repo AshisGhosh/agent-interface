@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Board } from "@/components/board";
+import { HelpModal, useHelpHotkey } from "@/components/help-modal";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { listProjects } from "@/lib/api";
@@ -14,6 +15,9 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useHelpHotkey(useCallback(() => setHelpOpen((v) => !v), []));
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +65,7 @@ export default function Home() {
         onOpenChange={setNewProjectOpen}
         onCreated={handleProjectCreated}
       />
+      <HelpModal open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }

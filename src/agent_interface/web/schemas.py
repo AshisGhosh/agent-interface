@@ -61,6 +61,7 @@ class TaskOut(BaseModel):
     created_at: str
     updated_at: str
     closed_at: Optional[str] = None
+    progress_pct: Optional[int] = None
 
 
 class TaskEventOut(BaseModel):

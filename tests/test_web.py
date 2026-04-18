@@ -92,6 +92,28 @@ def test_list_tasks_unknown_project_404(client):
     assert r.status_code == 404
 
 
+def test_list_tasks_includes_latest_progress_pct(client, conn_factory):
+    client.post("/projects", json={"name": "p1"})
+    with_progress = client.post(
+        "/tasks", json={"project": "p1", "title": "has progress"}
+    ).json()["id"]
+    without_progress = client.post(
+        "/tasks", json={"project": "p1", "title": "no progress"}
+    ).json()["id"]
+
+    conn = conn_factory()
+    try:
+        core.progress(conn, with_progress, "first", pct=10)
+        core.progress(conn, with_progress, "second", pct=72)
+        core.progress(conn, without_progress, "note only")  # no pct
+    finally:
+        conn.close()
+
+    tasks = {t["id"]: t for t in client.get("/projects/p1/tasks").json()}
+    assert tasks[with_progress]["progress_pct"] == 72
+    assert tasks[without_progress]["progress_pct"] is None
+
+
 def test_create_task_unknown_project_400(client):
     r = client.post("/tasks", json={"project": "nope", "title": "x"})
     assert r.status_code == 400

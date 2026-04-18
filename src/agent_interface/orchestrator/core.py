@@ -131,6 +131,43 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[TaskEvent]:
     ]
 
 
+def latest_progress_pct(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, int]:
+    """Return the most recent `pct` value from progress events per task.
+
+    Tasks with no progress events (or progress events without a `pct` field)
+    are omitted from the result — treat a missing key as "no known percentage."
+    """
+    ids = [tid for tid in task_ids]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, payload_json
+        FROM task_events
+        WHERE event_type = 'progress' AND task_id IN ({placeholders})
+        ORDER BY id ASC
+        """,
+        ids,
+    ).fetchall()
+    latest: dict[str, int] = {}
+    for r in rows:
+        raw = r["payload_json"]
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        pct = payload.get("pct")
+        if isinstance(pct, bool) or not isinstance(pct, int):
+            continue
+        latest[r["task_id"]] = pct
+    return latest
+
+
 # ── projects ─────────────────────────────────────────────────────────────────
 
 def create_project(
