@@ -278,6 +278,23 @@ def build_server():
             return _task_to_dict(task)
 
     @server.tool()
+    def delete_task(task_id: str) -> dict:
+        """Delete a task permanently.
+
+        Removes the task, its events, notes, and dependency links.
+        Cannot delete a task that other tasks depend on — resolve
+        those first.
+
+        Args:
+            task_id: Task id to delete.
+        """
+        with _db() as conn:
+            deleted = core.delete_task(conn, task_id)
+            if not deleted:
+                raise ValueError(f"No such task: {task_id}")
+            return {"deleted": task_id}
+
+    @server.tool()
     def get_task(task_id: str) -> dict:
         """Fetch full details for a task, including recent events."""
         with _db() as conn:

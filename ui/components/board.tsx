@@ -546,6 +546,7 @@ export function Board({ projectId, className, onOpenMobileNav }: BoardProps) {
                   tasks={filteredByStatus[col.key] ?? []}
                   totalCount={tasksByStatus[col.key]?.length ?? 0}
                   onOpenTask={(t) => setOpenTaskId(t.id)}
+                  onDelete={onDeleteTask}
                 />
               ))}
             </div>

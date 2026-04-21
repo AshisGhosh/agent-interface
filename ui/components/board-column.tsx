@@ -31,10 +31,12 @@ export const COLUMNS: ColumnDef[] = [
 interface BoardColumnProps {
   column: ColumnDef;
   tasks: Task[];
+  totalCount?: number;
   onOpenTask?: (task: Task) => void;
+  onDelete?: (taskId: string) => void;
 }
 
-export function BoardColumn({ column, tasks, onOpenTask }: BoardColumnProps) {
+export function BoardColumn({ column, tasks, onOpenTask, onDelete }: BoardColumnProps) {
   const droppableId = `${COLUMN_ID_PREFIX}${column.key}`;
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
@@ -64,7 +66,7 @@ export function BoardColumn({ column, tasks, onOpenTask }: BoardColumnProps) {
               </p>
             ) : (
               tasks.map((t) => (
-                <SortableTaskCard key={t.id} task={t} onOpen={onOpenTask} />
+                <SortableTaskCard key={t.id} task={t} onOpen={onOpenTask} onDelete={onDelete} />
               ))
             )}
           </div>

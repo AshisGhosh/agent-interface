@@ -3,7 +3,7 @@
 import { forwardRef } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { User } from "lucide-react";
+import { User, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -23,10 +23,11 @@ interface TaskCardProps {
   dragging?: boolean;
   className?: string;
   onClick?: () => void;
+  onDelete?: (taskId: string) => void;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
-  function TaskCard({ task, dragging, className, onClick }, ref) {
+  function TaskCard({ task, dragging, className, onClick, onDelete }, ref) {
     return (
       <Card
         ref={ref}
@@ -44,14 +45,33 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
             : undefined
         }
         className={cn(
-          "select-none space-y-2 p-3 text-sm shadow-sm transition-shadow",
+          "group relative select-none space-y-2 p-3 text-sm shadow-sm transition-shadow",
           onClick &&
             "cursor-pointer hover:shadow-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           dragging && "opacity-60",
           className,
         )}
       >
-        <div className="flex items-start justify-between gap-2">
+        {onDelete && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(task.id);
+            }}
+            title="Delete task"
+            className={cn(
+              "absolute right-1 top-1 rounded-md p-1",
+              "text-muted-foreground opacity-0 transition-opacity",
+              "hover:bg-destructive/10 hover:text-destructive",
+              "group-hover:opacity-100",
+            )}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+        <div className="flex items-start justify-between gap-2 pr-5">
           <span className="font-mono text-xs text-muted-foreground">{task.id}</span>
           <div className="flex shrink-0 items-center gap-1.5">
             {task.progress_pct != null && (
@@ -91,9 +111,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(
 export function SortableTaskCard({
   task,
   onOpen,
+  onDelete,
 }: {
   task: Task;
   onOpen?: (task: Task) => void;
+  onDelete?: (taskId: string) => void;
 }) {
   const {
     attributes,
@@ -115,6 +137,7 @@ export function SortableTaskCard({
         task={task}
         dragging={isDragging}
         onClick={onOpen ? () => onOpen(task) : undefined}
+        onDelete={onDelete}
       />
     </div>
   );
