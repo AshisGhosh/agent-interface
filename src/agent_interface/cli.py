@@ -779,6 +779,123 @@ def cmd_runs(
     console.print(table)
 
 
+@app.command("flake")
+def cmd_flake(
+    test: Optional[list[str]] = typer.Argument(
+        None, help="Test/scenario name (e.g. block-rel-test or sim_fast::loop_back)."
+    ),
+    status: str = typer.Option(
+        "fail", "--status", "-s", help="Outcome: pass / fail (synonyms ok)."
+    ),
+    note: Optional[str] = typer.Option(
+        None, "--note", "-m", help="Optional context (branch, host, what changed)."
+    ),
+    ms: Optional[float] = typer.Option(
+        None, "--ms", help="Duration of the run in milliseconds."
+    ),
+) -> None:
+    """Record one test outcome in this project's flaky-test ledger.
+
+    Keyed by the project (git root, else cwd) so the history follows the repo, not
+    the session. Read the picture back with `agi flakes` to tell a genuinely
+    flaky test (passes sometimes) apart from a deterministic failure before
+    sinking a session into "investigating" it. Works from any project directory.
+    """
+    from agent_interface.flake import normalize_status, project_key, record_result
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-6103e6d0", source="flake")
+
+    if not test:
+        console.print(
+            "[red]No test name given.[/red] e.g. "
+            "`agi flake block-rel-test -s fail -m 'motor stalled'`.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    name = " ".join(test)
+    try:
+        canon = normalize_status(status)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]", highlight=False)
+        raise typer.Exit(1)
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    record_result(
+        conn, project=project, test=name, status=canon, note=note, duration_ms=ms
+    )
+
+    mark = "[green]pass[/green]" if canon == "pass" else "[red]fail[/red]"
+    console.print(
+        f"recorded {mark} for [bold]{name}[/bold] "
+        f"[dim]({_compact_cwd(project)})[/dim]",
+        highlight=False,
+    )
+
+
+@app.command("flakes")
+def cmd_flakes(
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n", help="Only show tests whose name contains this text."
+    ),
+    flaky_only: bool = typer.Option(
+        False, "--flaky", help="Show only flaky tests (hide stable pass/fail)."
+    ),
+) -> None:
+    """Show this project's flaky-test report (outcomes from `agi flake`)."""
+    from agent_interface.flake import flaky_stats, project_key
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-6103e6d0", source="flakes")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    stats = flaky_stats(conn, project, name=name, flaky_only=flaky_only)
+    if not stats:
+        console.print(
+            f"[dim]No test results for {_compact_cwd(project)} yet. "
+            "Record one with `agi flake <test> -s fail`.[/dim]"
+        )
+        return
+
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] flaky-test report")
+    table = Table(show_header=True, box=None, pad_edge=False, padding=(0, 1, 0, 2))
+    table.add_column("TEST", overflow="ellipsis", max_width=46)
+    table.add_column("KIND", no_wrap=True)
+    table.add_column("PASS", justify="right", no_wrap=True, style="green")
+    table.add_column("FAIL", justify="right", no_wrap=True, style="red")
+    table.add_column("FAIL%", justify="right", no_wrap=True)
+    table.add_column("LAST", no_wrap=True)
+    table.add_column("SEEN", style="dim", no_wrap=True)
+
+    kind_style = {"flaky": "yellow", "failing": "red", "passing": "green"}
+    for s in stats:
+        kind = Text(s["kind"], style=kind_style.get(s["kind"], "dim"))
+        last = Text(
+            s["last_status"] or "—",
+            style="green" if s["last_status"] == "pass" else "red",
+        )
+        seen = (
+            _relative_time(
+                datetime.fromtimestamp(s["last_seen"], tz=timezone.utc).isoformat()
+            )
+            if s["last_seen"]
+            else "—"
+        )
+        table.add_row(
+            s["test"],
+            kind,
+            str(s["passes"]),
+            str(s["fails"]),
+            f"{s['fail_rate'] * 100:.0f}%",
+            last,
+            seen,
+        )
+    console.print(table)
+
+
 @app.command("note")
 def cmd_note(
     text: Optional[list[str]] = typer.Argument(

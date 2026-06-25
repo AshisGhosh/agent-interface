@@ -348,59 +348,70 @@ def test_jobs_remove():
     assert "ephemeral-job" not in runner.invoke(app, ["jobs"]).output
 
 
-# ── finding / findings ────────────────────────────────────────────────────────
+# ── flake / flakes (flaky-test ledger) ──────────────────────────────────────────
 
 
-def test_finding_record_and_list():
-    result = runner.invoke(
-        app, ["finding", "v3-distance", "--metric", "acc", "--value", "0.85"]
-    )
+def test_flake_records_and_reports():
+    result = runner.invoke(app, ["flake", "block-rel-test", "-s", "fail"])
     assert result.exit_code == 0
-    assert "v3-distance" in result.output
+    assert "recorded" in result.output
 
-    result = runner.invoke(app, ["findings"])
+    result = runner.invoke(app, ["flakes"])
     assert result.exit_code == 0
-    assert "v3-distance" in result.output
-    assert "acc" in result.output
+    assert "block-rel-test" in result.output
 
 
-def test_finding_requires_label():
-    result = runner.invoke(app, ["finding"])
+def test_flake_defaults_to_fail():
+    runner.invoke(app, ["flake", "motor-firmware"])
+    out = runner.invoke(app, ["flakes"]).output
+    assert "motor-firmware" in out
+    assert "failing" in out
+
+
+def test_flake_detects_flaky():
+    runner.invoke(app, ["flake", "loop-back", "-s", "fail"])
+    runner.invoke(app, ["flake", "loop-back", "-s", "pass"])
+    out = runner.invoke(app, ["flakes"]).output
+    assert "loop-back" in out
+    assert "flaky" in out
+
+
+def test_flake_status_synonyms():
+    result = runner.invoke(app, ["flake", "sim-eval", "-s", "passed"])
+    assert result.exit_code == 0
+    assert "pass" in result.output
+
+
+def test_flake_rejects_bad_status():
+    result = runner.invoke(app, ["flake", "t", "-s", "maybe"])
     assert result.exit_code == 1
-    assert "No label given" in result.output
+    assert "unknown status" in result.output
 
 
-def test_finding_value_needs_metric():
-    result = runner.invoke(app, ["finding", "v1", "--value", "0.5"])
+def test_flake_requires_test_name():
+    result = runner.invoke(app, ["flake"])
     assert result.exit_code == 1
-    assert "--value needs --metric" in result.output
+    assert "No test name given" in result.output
 
 
-def test_findings_compare_ranks_variants():
-    runner.invoke(app, ["finding", "v2-minimap", "--metric", "acc", "--value", "0.70"])
-    runner.invoke(app, ["finding", "v3-distance", "--metric", "acc", "--value", "0.90"])
-    result = runner.invoke(app, ["findings", "--compare", "--metric", "acc"])
+def test_flakes_empty():
+    result = runner.invoke(app, ["flakes"])
     assert result.exit_code == 0
-    # winner is marked and both variants appear
-    assert "v3-distance" in result.output
-    assert "v2-minimap" in result.output
+    assert "No test results" in result.output
 
 
-def test_findings_compare_needs_metric():
-    result = runner.invoke(app, ["findings", "--compare"])
-    assert result.exit_code == 1
-    assert "--compare needs --metric" in result.output
+def test_flakes_flaky_only_filter():
+    runner.invoke(app, ["flake", "flaky-one", "-s", "pass"])
+    runner.invoke(app, ["flake", "flaky-one", "-s", "fail"])
+    runner.invoke(app, ["flake", "always-broken", "-s", "fail"])
+    out = runner.invoke(app, ["flakes", "--flaky"]).output
+    assert "flaky-one" in out
+    assert "always-broken" not in out
 
 
-def test_findings_empty():
-    result = runner.invoke(app, ["findings"])
-    assert result.exit_code == 0
-    assert "No findings" in result.output
-
-
-def test_findings_remove():
-    runner.invoke(app, ["finding", "ephemeral"])
-    result = runner.invoke(app, ["findings", "--rm", "1"])
-    assert result.exit_code == 0
-    assert "removed finding #1" in result.output
-    assert "ephemeral" not in runner.invoke(app, ["findings"]).output
+def test_flakes_name_filter():
+    runner.invoke(app, ["flake", "motor-stop", "-s", "fail"])
+    runner.invoke(app, ["flake", "nav-plan", "-s", "fail"])
+    out = runner.invoke(app, ["flakes", "--name", "motor"]).output
+    assert "motor-stop" in out
+    assert "nav-plan" not in out

@@ -410,44 +410,36 @@ agi jobs --rm 1
 
 Statuses are `submitted`, `running`, `done`, `failed`, and `cancelled`.
 
-## Experiment findings ledger (`agi finding` / `agi findings`)
+## Flaky-test ledger (`agi flake` / `agi flakes`)
 
-Research/ML agents iterate over *variants* of an experiment — "v3:
-distance-prediction aux task replacing minimap recon" — and the thing that
-actually matters, *which variant won on which metric*, ends up scattered across
-scrollback, figures, and one-off prints. The next session (often the same agent
-after a context reset) is left "looking at all the outputs and figures and
-logged findings" trying to reconstruct what beat what.
+Agents doing sim / firmware / eval work hit the same trap repeatedly: a test
+fails once — a drive motor stalls on `block-rel-test`, a loop-back run flakes on
+the jetson — and a whole session is sunk "investigating" something that actually
+fails one run in five for reasons unrelated to the change. The opposite trap is
+just as costly: treating a *deterministic* failure as "probably flaky, retry."
 
-`agi finding` is a tiny, structured ledger for exactly that. Log a labeled
-variant's result with an optional metric/value, then read it back with
-`agi findings` or rank variants head-to-head with `agi findings --compare`. It
-is distinct from the notebook (`agi note`, prose) and the runbook (`agi run`,
-commands): findings are *numeric results you can rank*. Like both it works from
-**any** project directory — findings are keyed by the git repo root (falling
-back to the cwd), so they're shared across subdirectories and never mix across
+`agi flake` records each test outcome (`pass`/`fail`) and `agi flakes` reports
+which tests are genuinely **flaky** (both pass and fail seen), **failing** (only
+ever fails), or **passing**. Like the runbook and notebook it works from **any**
+project directory: results are keyed by the git repo root (falling back to the
+cwd), so the history follows the repo, not the session, and never mixes between
 projects.
 
 ```bash
-# Log a variant's result as you measure it.
-agi finding v2-minimap-recon --metric val_loss --value 0.42
-agi finding v3-distance-pred --metric val_loss --value 0.31 --note "replaced minimap recon"
+# Record an outcome (defaults to fail; status synonyms like passed/failed/ok work).
+agi flake block-rel-test -s fail -m "drive motor stopped, branch block-rel-test"
+agi flake block-rel-test -s pass            # ...and later it passed
 
-# Read this project's findings back (newest first).
-agi findings
-agi findings --metric val_loss        # only findings for one metric
-agi findings --label v3-distance-pred # only one variant
-
-# Rank variants by their best value for a metric (best first).
-agi findings --compare --metric success_rate   # higher is better (default)
-agi findings --compare --metric val_loss --min # lower is better (loss-like)
-
-# Drop a finding once it's no longer interesting.
-agi findings --rm 1
+# Read the report: per-test pass/fail tallies, fail-rate, and last outcome,
+# with flaky tests sorted to the top.
+agi flakes
+agi flakes --flaky                # only tests that have both passed and failed
+agi flakes --name motor           # only tests whose name contains "motor"
 ```
 
-`--compare` keeps the best value per variant and marks the winner, so a fresh
-session can see at a glance that v3 beat v2 without re-reading every figure.
+Use it before a deep dive: if `block-rel-test` shows up as `flaky` with a 40%
+fail-rate, retry it rather than chasing a regression; if it's `failing` at 100%,
+it's real. `--ms` optionally records each run's duration.
 
 ## Example workflows
 
