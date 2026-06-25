@@ -441,6 +441,48 @@ Use it before a deep dive: if `block-rel-test` shows up as `flaky` with a 40%
 fail-rate, retry it rather than chasing a regression; if it's `failing` at 100%,
 it's real. `--ms` optionally records each run's duration.
 
+## Iteration assessment rubric (`agi assess` / `agi assessments`)
+
+A huge amount of agent work is *qualitative iteration*: overhaul the art, re-tune
+the procedural generator, redo the lighting, look at the result, decide whether
+it's better, tweak, repeat. The "look at the result and decide" step — the
+eval/assessment — is exactly the knowledge that dies with the session. The next
+iteration (often the same agent after a context reset) can't remember whether the
+last pass actually improved silhouette readability or made the palette worse, so
+it re-judges from scratch or quietly regresses something it already fixed.
+
+`agi assess` is a tiny structured rubric for that loop. Score the **current
+iteration** of a subject against named criteria; the iteration number is assigned
+automatically. A later session reads the history back with `agi assessments` and —
+crucially — sees the **per-criterion trend** across iterations with `--trend`:
+which criteria are improving, which regressed, and by how much. It's distinct
+from `agi finding` (which ranks *variants* on one numeric *metric*): assessments
+track *iterations* of one subject across *multiple* rubric criteria over time.
+Like the rest of the toolkit it works from **any** project directory — assessments
+are keyed by the git repo root (falling back to the cwd), so they follow the repo,
+not the session, and never mix between projects.
+
+```bash
+# Assess the current iteration (repeat -c for each rubric criterion).
+agi assess art-overhaul -c lighting=7 -c palette=5 -c silhouette=8 -V needs-work
+# ...iterate, then assess again — the iteration number auto-increments.
+agi assess art-overhaul -c lighting=8 -c palette=7 -c silhouette=8 -V ship -n "warmer key light"
+
+# Read the history back (newest first); filter to one subject.
+agi assessments
+agi assessments art-overhaul
+
+# See the per-criterion trend across iterations (↑ improving, ↓ regressed).
+agi assessments art-overhaul --trend
+
+# Drop an assessment once it's no longer interesting.
+agi assessments --rm 1
+```
+
+Scores are freeform numbers — pick any scale (0–10, 1–5, percent) and stay
+consistent within a subject. A criterion that shows `↓` in `--trend` is one a
+later iteration made worse: fix the regression before shipping.
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session

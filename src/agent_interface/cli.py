@@ -1170,6 +1170,193 @@ def cmd_findings(
         )
 
 
+def _fmt_scores(scores: list) -> str:
+    """Render an ordered ``[(criterion, score), ...]`` list inline."""
+    return "  ".join(
+        f"[cyan]{name}[/cyan]=[bold]{_fmt_metric_value(score)}[/bold]"
+        for name, score in scores
+    )
+
+
+@app.command("assess")
+def cmd_assess(
+    subject: Optional[list[str]] = typer.Argument(
+        None, help="What is being iterated on, e.g. 'art-overhaul'."
+    ),
+    criterion: Optional[list[str]] = typer.Option(
+        None, "--criterion", "-c",
+        help="A rubric score as name=value (repeatable), e.g. -c lighting=7.",
+    ),
+    verdict: Optional[str] = typer.Option(
+        None, "--verdict", "-V",
+        help="Short call on this iteration, e.g. 'ship' / 'needs-work'.",
+    ),
+    note: Optional[str] = typer.Option(
+        None, "--note", "-n", help="Freeform context for this iteration."
+    ),
+) -> None:
+    """Score the current iteration of a subject against rubric criteria.
+
+    Captures a qualitative eval of where this iteration landed — per-criterion
+    scores plus an optional verdict/note — keyed by the project (git root, else
+    cwd). The iteration number is assigned automatically. Read the history and
+    per-criterion trend back with `agi assessments <subject> --trend`. Distinct
+    from `agi finding`, which ranks variants on one metric. Works from any
+    project directory.
+    """
+    from agent_interface.assess import parse_criterion, project_key, record_assessment
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-3a801c34", source="assess")
+
+    name = " ".join(subject).strip() if subject else ""
+    if not name:
+        console.print(
+            "[red]No subject given.[/red] Name what you're iterating on, e.g. "
+            '`agi assess art-overhaul -c lighting=7 -c palette=5`.',
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    scores: list = []
+    for raw in criterion or []:
+        try:
+            scores.append(parse_criterion(raw))
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]", highlight=False)
+            raise typer.Exit(1) from None
+
+    if not scores and verdict is None and note is None:
+        console.print(
+            "[red]Nothing to assess.[/red] Give at least one criterion, a "
+            "--verdict, or a --note.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    result = record_assessment(
+        conn,
+        project=project,
+        subject=name,
+        scores=scores,
+        verdict=verdict,
+        note=note,
+    )
+
+    detail = f"  {_fmt_scores(result['scores'])}" if result["scores"] else ""
+    verdict_label = f" [yellow]{verdict}[/yellow]" if verdict else ""
+    console.print(
+        f"[bold green]◎[/bold green] assessed [magenta]{name}[/magenta] "
+        f"[bold]#iter {result['iteration']}[/bold]{verdict_label}{detail} "
+        f"[dim](#{result['id']} · {_compact_cwd(project)})[/dim]",
+        highlight=False,
+    )
+
+
+@app.command("assessments")
+def cmd_assessments(
+    subject: Optional[list[str]] = typer.Argument(
+        None, help="Only show assessments for this subject."
+    ),
+    trend: bool = typer.Option(
+        False, "--trend", "-t",
+        help="Show the per-criterion trend across iterations (needs a subject).",
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max assessments to show."),
+    rm: Optional[int] = typer.Option(
+        None, "--rm", help="Delete the assessment with this id from this project."
+    ),
+) -> None:
+    """Read back this project's assessments (logged via `agi assess`)."""
+    from agent_interface.assess import (
+        assessment_trend,
+        list_assessments,
+        project_key,
+        remove_assessment,
+    )
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-3a801c34", source="assessments")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+
+    if rm is not None:
+        if remove_assessment(conn, project, rm):
+            console.print(f"[dim]removed assessment #{rm}[/dim]")
+        else:
+            console.print(
+                f"[red]No assessment #{rm} in {_compact_cwd(project)}.[/red]",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        return
+
+    subj = " ".join(subject).strip() if subject else ""
+
+    if trend:
+        if not subj:
+            console.print(
+                "[red]--trend needs a subject.[/red] Pick the subject to chart, "
+                "e.g. `agi assessments art-overhaul --trend`.",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        rows = assessment_trend(conn, project, subj)
+        if not rows:
+            console.print(
+                f"[dim]No assessments of '{subj}' for "
+                f"{_compact_cwd(project)} yet.[/dim]"
+            )
+            return
+        arrows = {
+            "up": "[green]↑[/green]",
+            "down": "[red]↓[/red]",
+            "flat": "[dim]→[/dim]",
+        }
+        console.print(f"[bold]{_compact_cwd(project)}[/bold] · {subj} trend")
+        for e in rows:
+            series = " ".join(
+                f"[dim]i{it}:[/dim]{_fmt_metric_value(sc)}" for it, sc in e["points"]
+            )
+            delta = e["delta"]
+            sign = "+" if delta > 0 else ""
+            console.print(
+                f"  [cyan]{e['criterion']}[/cyan] {arrows[e['direction']]} "
+                f"[dim]({sign}{_fmt_metric_value(delta)})[/dim]  {series}",
+                highlight=False,
+            )
+        return
+
+    assessments = list_assessments(
+        conn, project, subject=subj or None, limit=limit
+    )
+    if not assessments:
+        scope = f"'{subj}' in " if subj else ""
+        console.print(
+            f"[dim]No assessments for {scope}{_compact_cwd(project)} yet. "
+            'Log one with `agi assess <subject> -c <name>=<score>`.[/dim]'
+        )
+        return
+
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] assessments")
+    for a in assessments:
+        when = _relative_time(
+            datetime.fromtimestamp(a["created_at"], tz=timezone.utc).isoformat()
+        )
+        verdict_label = f" [yellow]{a['verdict']}[/yellow]" if a["verdict"] else ""
+        scores = f"\n    {_fmt_scores(a['scores'])}" if a["scores"] else ""
+        note = f"\n    [dim]{a['note']}[/dim]" if a["note"] else ""
+        console.print(
+            f"  [dim]#{a['id']}[/dim] [magenta]{a['subject']}[/magenta] "
+            f"[bold]i{a['iteration']}[/bold]{verdict_label} [dim]{when}[/dim]"
+            f"{scores}{note}",
+            highlight=False,
+        )
+
+
 @app.command("job")
 def cmd_job(
     title: Optional[list[str]] = typer.Argument(
