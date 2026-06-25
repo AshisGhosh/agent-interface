@@ -539,6 +539,30 @@ def cmd_doctor() -> None:
     )
 
 
+def _hooks_install_due(interval_seconds: int = 3600) -> bool:
+    """True if hooks haven't been reinstalled within `interval_seconds`.
+
+    Records the timestamp on each affirmative so the heartbeat only pays the
+    `claude mcp` reinstall cost ~hourly instead of every tick.
+    """
+    import time
+    from pathlib import Path
+
+    stamp = Path.home() / ".config" / "agi" / "hooks_last_install"
+    try:
+        last = float(stamp.read_text().strip())
+    except (OSError, ValueError):
+        last = 0.0
+    if time.time() - last < interval_seconds:
+        return False
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(time.time()))
+    except OSError:
+        pass
+    return True
+
+
 @app.command("heartbeat", hidden=True)
 def cmd_heartbeat() -> None:
     """Idempotent self-heal tick: scan, reconcile, keep the bot + dashboard alive.
@@ -550,8 +574,11 @@ def cmd_heartbeat() -> None:
     steps: list[str] = []
     try:
         from agent_interface.scan import scan_and_register
-        scan_and_register()
-        steps.append("scan")
+        # Reinstalling hooks every tick spawns `claude mcp` subprocesses for no
+        # benefit. Throttle to ~hourly so hooks still self-heal if removed.
+        do_hooks = _hooks_install_due()
+        scan_and_register(install_hooks=do_hooks)
+        steps.append("scan+hooks" if do_hooks else "scan")
     except Exception as e:  # noqa: BLE001
         steps.append(f"scan!{type(e).__name__}")
 

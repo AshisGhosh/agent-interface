@@ -241,14 +241,22 @@ def deduplicate_by_pane(processes: list[ProcessInfo]) -> list[ProcessInfo]:
     return list(pane_best.values()) + no_pane
 
 
-def scan_and_register() -> tuple[bool, list[tuple[str, ProcessInfo]]]:
-    """Scan for agent processes, install hooks, and register new ones.
+def scan_and_register(
+    *, install_hooks: bool = True,
+) -> tuple[bool, list[tuple[str, ProcessInfo]]]:
+    """Scan for agent processes, optionally (re)install hooks, register new ones.
+
+    ``install_hooks`` is True for interactive `agi scan` (cheap to be sure the
+    machine is wired up). The always-on heartbeat passes False on most ticks —
+    reinstalling hooks every couple of minutes spawns `claude mcp` subprocesses
+    for no benefit (see the throttle in `agi heartbeat`).
 
     Returns (hooks_installed, list of (action, process_info)).
     """
-    from agent_interface.hooks import install_hooks
-
-    hooks_installed, hooks_msg = install_hooks()
+    hooks_installed = False
+    if install_hooks:
+        from agent_interface.hooks import install_hooks as _install
+        hooks_installed, _ = _install()
 
     processes = find_claude_processes()
     enrich_with_tmux(processes)
