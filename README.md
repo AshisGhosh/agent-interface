@@ -314,6 +314,37 @@ The CLI name is `agi`.
 - `agi dump`
 - `agi schema`
 
+## Command runbook (`agi run` / `agi runs`)
+
+Agents working across projects — sim evals, nav pipelines, remote batch runs —
+repeatedly need the *exact* command they ran last time, but that knowledge dies
+with the session. `agi run` journals every command it executes so a later
+session can recall and replay it. It works from **any** project directory: runs
+are keyed by the git repo root (falling back to the cwd), so the runbook is the
+same whether you invoke it from the repo root or a subdirectory, and runs from
+different projects never mix.
+
+```bash
+# Run a command and record it. Tag it with a name to replay later.
+agi run --name nav-eval python eval.py --scene nfinite --batch
+
+# Re-run the most recent command tagged "nav-eval" (no need to retype it).
+agi run --replay nav-eval
+
+# Re-run the most recent command in this project, whatever it was.
+agi run --last
+
+# Show this project's runbook: id, when, status, duration, name, command.
+agi runs
+agi runs --name nav-eval      # only runs tagged nav-eval
+```
+
+For each run `agi` records the command, working directory, exit code, duration,
+and a bounded tail of its output. The command's own exit code is propagated, so
+`agi run` is safe to drop into scripts and CI. Pipes and shell operators are
+preserved when you pass the whole command as a single quoted argument
+(`agi run "make && ./run_eval.sh | tee out.log"`).
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session

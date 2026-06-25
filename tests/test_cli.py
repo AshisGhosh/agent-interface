@@ -160,3 +160,63 @@ def test_register_with_pid():
 
     result = runner.invoke(app, ["show", "s1"])
     assert "99999" in result.output
+
+
+# ── run / runs (command runbook) ───────────────────────────────────────────────
+
+
+def test_run_records_and_lists():
+    result = runner.invoke(app, ["run", "echo", "hello-runbook"])
+    assert result.exit_code == 0
+    assert "hello-runbook" in result.output
+
+    result = runner.invoke(app, ["runs"])
+    assert result.exit_code == 0
+    assert "echo hello-runbook" in result.output
+
+
+def test_run_propagates_exit_code():
+    result = runner.invoke(app, ["run", "exit 7"])
+    assert result.exit_code == 7
+
+
+def test_run_replay_by_name():
+    runner.invoke(app, ["run", "--name", "eval", "echo", "first-eval"])
+    result = runner.invoke(app, ["run", "--replay", "eval"])
+    assert result.exit_code == 0
+    assert "replaying" in result.output
+    assert "echo first-eval" in result.output
+
+
+def test_run_last():
+    runner.invoke(app, ["run", "echo", "the-last-one"])
+    result = runner.invoke(app, ["run", "--last"])
+    assert result.exit_code == 0
+    assert "echo the-last-one" in result.output
+
+
+def test_run_replay_missing_name():
+    result = runner.invoke(app, ["run", "--replay", "nope"])
+    assert result.exit_code == 1
+    assert "No prior run" in result.output
+
+
+def test_run_no_command():
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code == 1
+    assert "No command given" in result.output
+
+
+def test_runs_empty():
+    result = runner.invoke(app, ["runs"])
+    assert result.exit_code == 0
+    assert "No runs recorded" in result.output
+
+
+def test_runs_name_filter():
+    runner.invoke(app, ["run", "--name", "nav", "echo", "nav-run"])
+    runner.invoke(app, ["run", "--name", "eval", "echo", "eval-run"])
+    result = runner.invoke(app, ["runs", "--name", "nav"])
+    assert result.exit_code == 0
+    assert "nav-run" in result.output
+    assert "eval-run" not in result.output

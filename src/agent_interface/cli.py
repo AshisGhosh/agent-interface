@@ -639,6 +639,146 @@ def cmd_usage_record(
     record_usage(feature_id, source=source)
 
 
+@app.command(
+    "run",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+def cmd_run(
+    cmd: Optional[list[str]] = typer.Argument(
+        None, help="Command to run (e.g. python eval.py --scene nfinite)."
+    ),
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n", help="Tag this run so it can be replayed by name."
+    ),
+    replay: Optional[str] = typer.Option(
+        None, "--replay", help="Re-run the most recent run with this name."
+    ),
+    last: bool = typer.Option(
+        False, "--last", help="Re-run the most recent command in this project."
+    ),
+    tail: int = typer.Option(40, "--tail", help="Output lines to keep in the journal."),
+) -> None:
+    """Run a command and journal it in this project's runbook.
+
+    Records the exact command, its exit code, duration, and output tail keyed by
+    the project (git root, else cwd) so a later session can recall it with
+    `agi runs` or replay it with `agi run --replay <name>` / `agi run --last`.
+    Works from any project directory.
+    """
+    from agent_interface.runlog import (
+        build_command,
+        last_run,
+        project_key,
+        record_run,
+        run_command,
+    )
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-b0126e38", source="run")
+
+    cwd = os.getcwd()
+    project = project_key(cwd)
+    conn = get_connection()
+
+    # Resolve the command: replay a prior one, or build it from the arguments.
+    if replay is not None or last:
+        prior = last_run(conn, project, name=replay)
+        if prior is None:
+            target = f"named '{replay}'" if replay else "any"
+            console.print(
+                f"[red]No prior run ({target}) recorded for this project.[/red]",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        command = prior["cmd"]
+        if name is None:
+            name = prior["name"]
+        console.print(f"[dim]replaying:[/dim] {command}", highlight=False)
+    else:
+        if not cmd:
+            console.print(
+                "[red]No command given.[/red] Pass a command, or use "
+                "--last / --replay <name>.",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        command = build_command(list(cmd))
+
+    label = f" [dim]({name})[/dim]" if name else ""
+    console.print(f"[bold green]▶[/bold green] {command}{label}", highlight=False)
+
+    exit_code, duration_s, output_tail = run_command(
+        command, cwd, tail_lines=tail, stream=lambda line: console.file.write(line)
+    )
+
+    record_run(
+        conn,
+        project=project,
+        cmd=command,
+        cwd=cwd,
+        exit_code=exit_code,
+        duration_s=duration_s,
+        output_tail=output_tail,
+        name=name,
+    )
+
+    status = "[green]ok[/green]" if exit_code == 0 else f"[red]exit {exit_code}[/red]"
+    console.print(
+        f"[dim]──[/dim] {status} [dim]in {duration_s:.1f}s · journaled to "
+        f"{_compact_cwd(project)}[/dim]",
+        highlight=False,
+    )
+    if exit_code != 0:
+        raise typer.Exit(exit_code or 1)
+
+
+@app.command("runs")
+def cmd_runs(
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n", help="Only show runs tagged with this name."
+    ),
+    limit: int = typer.Option(20, "--limit", help="Max runs to show."),
+) -> None:
+    """Show this project's command runbook (recent `agi run` invocations)."""
+    from agent_interface.runlog import list_runs, project_key
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    runs = list_runs(conn, project, limit=limit, name=name)
+    if not runs:
+        console.print(
+            f"[dim]No runs recorded for {_compact_cwd(project)} yet. "
+            "Run one with `agi run <cmd>`.[/dim]"
+        )
+        return
+
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] runbook")
+    table = Table(show_header=True, box=None, pad_edge=False, padding=(0, 1, 0, 2))
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("WHEN", style="dim", no_wrap=True)
+    table.add_column("STATUS", no_wrap=True)
+    table.add_column("TOOK", justify="right", no_wrap=True, style="dim")
+    table.add_column("NAME", style="magenta", no_wrap=True)
+    table.add_column("COMMAND", overflow="ellipsis", max_width=60)
+
+    for r in runs:
+        ec = r["exit_code"]
+        if ec is None:
+            status = Text("?", style="dim")
+        elif ec == 0:
+            status = Text("ok", style="green")
+        else:
+            status = Text(f"exit {ec}", style="red")
+        when = _relative_time(
+            datetime.fromtimestamp(r["started_at"], tz=timezone.utc).isoformat()
+        )
+        took = f"{r['duration_s']:.1f}s" if r["duration_s"] is not None else "—"
+        table.add_row(
+            str(r["id"]), when, status, took, r["name"] or "—", r["cmd"]
+        )
+    console.print(table)
+
+
 @app.command("features")
 def cmd_features() -> None:
     """Show autonomously-shipped features and whether they've been used."""
