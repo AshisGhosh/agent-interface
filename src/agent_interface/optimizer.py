@@ -252,9 +252,130 @@ def _dispatch_for(opp: WorkflowOpportunity, cfg: dict[str, Any]) -> dict[str, An
 
     cwd = cfg.get("dispatch_cwd") or _default_repo()
     res = dispatch_task(task.id, cwd=cwd, worktree=True)
+    try:
+        from agent_interface.telegram import send_message
+        send_message(f"🚀 <b>self-improve</b> dispatched: {title[:70]}")
+    except Exception:  # noqa: BLE001
+        pass
     return {"task_id": task.id, "session_id": res.session_id}
 
 
 def _default_repo() -> str:
     """The agent-interface repo root — where self-improvement work lands."""
     return str(Path(__file__).resolve().parent.parent.parent)
+
+
+# ── delivery safety-net: ensure completed work actually lands on main ──────────
+#
+# The orchestrator squash-merges a finished task to main only when a worktree is
+# checked out on main. If it isn't (e.g. mid-feature-branch), the merge is
+# silently *skipped* and the improvement strands on its task/<id> branch —
+# delivered but never used. This net detects those stragglers and lands the
+# fast-forwardable, test-passing ones, notifying either way.
+
+
+def _git(args: list[str], repo: str, timeout: int = 120) -> Any:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def pending_deliveries(conn, repo: str) -> list[dict[str, str]]:
+    """Done self-improve tasks whose task/<id> branch exists but isn't on main."""
+    project = DEFAULTS["project_name"]
+    rows = conn.execute(
+        """SELECT t.id AS id, t.title AS title
+           FROM tasks t JOIN projects p ON t.project_id = p.id
+           WHERE p.name = ? AND t.status = 'done'""",
+        (project,),
+    ).fetchall()
+
+    out: list[dict[str, str]] = []
+    for r in rows:
+        branch = f"task/{r['id']}"
+        if _git(["rev-parse", "--verify", "--quiet", branch], repo).returncode != 0:
+            continue  # branch gone — already merged and cleaned up
+        if _git(["merge-base", "--is-ancestor", branch, "main"], repo).returncode == 0:
+            continue  # already contained in main
+        out.append({"id": r["id"], "title": r["title"], "branch": branch})
+    return out
+
+
+def _repo_idle_on_main(repo: str) -> bool:
+    """Only touch the repo when it's safe: clean tree, currently on main."""
+    head = _git(["symbolic-ref", "--short", "HEAD"], repo)
+    clean = not _git(["status", "--porcelain"], repo).stdout.strip()
+    return head.stdout.strip() == "main" and clean
+
+
+def _preflight_ok(repo: str) -> bool:
+    """Run the repo's preflight gate (ruff + tests). Missing script → skip gate."""
+    script = Path(repo) / "scripts" / "preflight.sh"
+    if not script.exists():
+        return True
+    import subprocess
+
+    return subprocess.run(
+        ["bash", str(script)], cwd=repo, capture_output=True, text=True, timeout=900,
+    ).returncode == 0
+
+
+def deliver_pending(repo: Optional[str] = None, *, notify: bool = True) -> dict[str, list]:
+    """Land stranded self-improve branches on main when fast-forward + green.
+
+    Conservative on purpose: fast-forward only (never auto-resolve conflicts),
+    and roll the merge back if the test gate fails. Anything not landed is
+    flagged for the user.
+    """
+    repo = repo or _default_repo()
+    landed: list[dict] = []
+    flagged: list[dict] = []
+    try:
+        from agent_interface.orchestrator.db import get_connection
+        conn = get_connection()
+        items = pending_deliveries(conn, repo)
+    except Exception:  # noqa: BLE001
+        return {"landed": landed, "flagged": flagged}
+
+    for item in items:
+        branch = item["branch"]
+        ff_ok = _git(["merge-base", "--is-ancestor", "main", branch], repo).returncode == 0
+        if not (ff_ok and _repo_idle_on_main(repo)):
+            flagged.append({**item, "reason": "not fast-forwardable or repo busy"})
+            continue
+
+        prev = _git(["rev-parse", "main"], repo).stdout.strip()
+        if _git(["merge", "--ff-only", branch], repo).returncode != 0:
+            flagged.append({**item, "reason": "fast-forward failed"})
+            continue
+        if _preflight_ok(repo):
+            _git(["branch", "-d", branch], repo)
+            landed.append(item)
+            _audit({"deliver": "landed", "task": item["id"]})
+        else:
+            _git(["reset", "--hard", prev], repo)  # roll back the bad merge
+            flagged.append({**item, "reason": "test gate failed (rolled back)"})
+            _audit({"deliver": "rolled_back", "task": item["id"]})
+
+    if notify and (landed or flagged):
+        _notify_deliveries(landed, flagged)
+    return {"landed": landed, "flagged": flagged}
+
+
+def _notify_deliveries(landed: list[dict], flagged: list[dict]) -> None:
+    try:
+        from agent_interface.telegram import send_message
+
+        lines = ["🔧 <b>self-improve delivery</b>"]
+        for i in landed:
+            lines.append(f"✅ landed: {i['title'][:60]}")
+        for i in flagged:
+            lines.append(
+                f"⚠️ needs merge ({i['reason']}): {i['title'][:45]} "
+                f"[<code>{i['branch']}</code>]"
+            )
+        send_message("\n".join(lines))
+    except Exception:  # noqa: BLE001
+        pass

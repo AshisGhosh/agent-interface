@@ -571,9 +571,16 @@ def cmd_heartbeat() -> None:
         steps.append(f"bot!{type(e).__name__}")
 
     try:
-        from agent_interface.optimizer import maybe_run
+        from agent_interface.optimizer import deliver_pending, maybe_run
+        # Land any stranded improvements first, then consider a new dispatch.
+        delivered = deliver_pending()
         result = maybe_run()
-        steps.append("optimize" + ("+dispatched" if result.get("dispatched") else ""))
+        tags = []
+        if delivered.get("landed"):
+            tags.append(f"landed={len(delivered['landed'])}")
+        if result.get("dispatched"):
+            tags.append("dispatched")
+        steps.append("optimize" + ("(" + ",".join(tags) + ")" if tags else ""))
     except Exception as e:  # noqa: BLE001
         steps.append(f"optimize!{type(e).__name__}")
 
@@ -653,6 +660,34 @@ def cmd_optimize_kill() -> None:
     KILLSWITCH_PATH.parent.mkdir(parents=True, exist_ok=True)
     KILLSWITCH_PATH.write_text("disabled by `agi optimize kill`\n")
     console.print(f"[red]Kill-switch set.[/red] Remove {KILLSWITCH_PATH} to resume.")
+
+
+@optimize_app.command("deliveries")
+def cmd_optimize_deliveries(
+    land: bool = typer.Option(
+        False, "--land", help="Land fast-forwardable, test-passing ones now.",
+    ),
+) -> None:
+    """Show (or land) completed improvements not yet merged into main."""
+    from agent_interface.optimizer import _default_repo, deliver_pending, pending_deliveries
+
+    if land:
+        res = deliver_pending(notify=False)
+        for i in res["landed"]:
+            console.print(f"  [green]landed[/green] {i['title'][:60]}")
+        for i in res["flagged"]:
+            console.print(f"  [yellow]{i['reason']}[/yellow] {i['title'][:50]} [{i['branch']}]")
+        if not res["landed"] and not res["flagged"]:
+            console.print("[dim]Nothing pending.[/dim]")
+        return
+
+    from agent_interface.orchestrator.db import get_connection as _oc
+    pend = pending_deliveries(_oc(), _default_repo())
+    if not pend:
+        console.print("[dim]All completed improvements are merged into main.[/dim]")
+        return
+    for i in pend:
+        console.print(f"  [yellow]pending[/yellow] {i['title'][:60]} [{i['branch']}]")
 
 
 @optimize_app.command("run")
