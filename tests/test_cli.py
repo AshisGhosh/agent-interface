@@ -280,3 +280,69 @@ def test_notes_remove_missing():
     result = runner.invoke(app, ["notes", "--rm", "999"])
     assert result.exit_code == 1
     assert "No note #999" in result.output
+
+
+# ── jobs (cluster/remote job ledger) ─────────────────────────────────────────
+
+
+def test_job_records_and_lists():
+    result = runner.invoke(
+        app, ["job", "H100 sweep", "--id", "481923", "--aim", "https://aim/run/ab12"]
+    )
+    assert result.exit_code == 0
+    assert "tracked job #1" in result.output
+
+    result = runner.invoke(app, ["jobs"])
+    assert result.exit_code == 0
+    assert "H100 sweep" in result.output
+    assert "481923" in result.output
+
+
+def test_job_requires_title():
+    result = runner.invoke(app, ["job"])
+    assert result.exit_code == 1
+    assert "No job title" in result.output
+
+
+def test_job_rejects_bad_status():
+    result = runner.invoke(app, ["job", "x", "--status", "bogus"])
+    assert result.exit_code == 1
+    assert "Invalid status" in result.output
+
+
+def test_job_update_bumps_status():
+    runner.invoke(app, ["job", "sweep", "--id", "1"])
+    result = runner.invoke(app, ["job", "--update", "1", "--status", "running"])
+    assert result.exit_code == 0
+    assert "running" in result.output
+    # status reflected in the listing
+    assert "running" in runner.invoke(app, ["jobs"]).output
+
+
+def test_job_update_missing():
+    result = runner.invoke(app, ["job", "--update", "999", "--status", "done"])
+    assert result.exit_code == 1
+    assert "No job #999" in result.output
+
+
+def test_jobs_open_filter():
+    runner.invoke(app, ["job", "live", "--status", "running"])
+    runner.invoke(app, ["job", "finished", "--status", "done"])
+    result = runner.invoke(app, ["jobs", "--open"])
+    assert result.exit_code == 0
+    assert "live" in result.output
+    assert "finished" not in result.output
+
+
+def test_jobs_empty():
+    result = runner.invoke(app, ["jobs"])
+    assert result.exit_code == 0
+    assert "No jobs tracked" in result.output
+
+
+def test_jobs_remove():
+    runner.invoke(app, ["job", "ephemeral-job"])
+    result = runner.invoke(app, ["jobs", "--rm", "1"])
+    assert result.exit_code == 0
+    assert "removed job #1" in result.output
+    assert "ephemeral-job" not in runner.invoke(app, ["jobs"]).output

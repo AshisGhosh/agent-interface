@@ -375,6 +375,41 @@ agi notes --search "node"         # only notes mentioning "node"
 agi notes --rm 3
 ```
 
+## Cluster job ledger (`agi job` / `agi jobs`)
+
+Agents working on ML projects routinely submit a job to a remote cluster — an
+H100 SLURM allocation, a batch run, a sweep — get back a *job id*, and start an
+[AIM](https://github.com/aimhubio/aim) run that streams metrics to a remote URL.
+None of that survives the session: the next agent (or the same one after a
+context reset) has no idea which jobs are in flight, what their cluster ids are,
+or where to point `aim up` to watch them — so they re-submit or lose the run.
+
+`agi job` is a tiny project-scoped ledger for exactly that handoff. Record a job
+when you submit it, bump its status as it runs, and read the in-flight jobs back
+with `agi jobs` — cluster id and AIM streaming URL in hand. Like the runbook and
+notebook it works from **any** project directory: jobs are keyed by the git repo
+root (falling back to the cwd), so they're shared across subdirectories and jobs
+from different projects never mix.
+
+```bash
+# Record a job when you submit it (cluster id + AIM run/streaming URL).
+agi job "H100 sweep: polargrad lr=3e-4" --id 481923 --aim https://aim.local/run/ab12
+
+# Bump status (and attach an AIM run) once it starts / finishes.
+agi job --update 1 --status running --aim https://aim.local/run/ab12
+agi job --update 1 --status done
+
+# List this project's jobs (newest activity first).
+agi jobs
+agi jobs --open                  # only in-flight jobs (submitted/running)
+agi jobs --status failed         # filter by status
+
+# Drop a job once it's settled and no longer interesting.
+agi jobs --rm 1
+```
+
+Statuses are `submitted`, `running`, `done`, `failed`, and `cancelled`.
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session

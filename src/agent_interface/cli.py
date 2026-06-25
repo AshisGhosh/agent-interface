@@ -874,6 +874,191 @@ def cmd_notes(
         )
 
 
+@app.command("job")
+def cmd_job(
+    title: Optional[list[str]] = typer.Argument(
+        None, help="What this job is (e.g. 'H100 sweep: polargrad lr=3e-4')."
+    ),
+    job_id: Optional[str] = typer.Option(
+        None, "--id", "-i", help="Cluster/SLURM job id returned at submission."
+    ),
+    aim: Optional[str] = typer.Option(
+        None, "--aim", "-a", help="AIM run hash or remote streaming URL to watch."
+    ),
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s",
+        help="Job status: submitted, running, done, failed, cancelled.",
+    ),
+    note: Optional[str] = typer.Option(
+        None, "--note", "-n", help="Freeform note (config, caveat, what to check)."
+    ),
+    update: Optional[int] = typer.Option(
+        None, "--update", "-u", help="Update the tracked job with this id instead of adding."
+    ),
+) -> None:
+    """Track a cluster/remote job (id + AIM streaming URL) for the next session.
+
+    Record a job when you submit it so a later agent — or you after a context
+    reset — can recall its cluster id and AIM run with `agi jobs` instead of
+    re-submitting or losing the stream:
+
+        agi job "H100 sweep: polargrad" --id 481923 --aim https://aim/run/ab12
+
+    Re-use the same command with `--update <n>` to bump status or attach an AIM
+    run once the job starts. Project-scoped; works from any project directory.
+    """
+    from agent_interface.jobs import STATUSES, add_job, get_job, project_key, update_job
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-c7780666", source="job")
+
+    if status is not None and status not in STATUSES:
+        console.print(
+            f"[red]Invalid status '{status}'.[/red] Use one of: {', '.join(STATUSES)}.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    body = " ".join(title).strip() if title else ""
+    project = project_key(os.getcwd())
+    conn = get_connection()
+
+    if update is not None:
+        # Title is optional on update — only patch what was passed.
+        patched = update_job(
+            conn,
+            project,
+            update,
+            job_id=job_id,
+            aim=aim,
+            status=status,
+            note=note or (body or None),
+        )
+        if not patched:
+            existing = get_job(conn, project, update)
+            if existing is None:
+                console.print(
+                    f"[red]No job #{update} in {_compact_cwd(project)}.[/red]",
+                    highlight=False,
+                )
+            else:
+                console.print(
+                    "[red]Nothing to update.[/red] Pass --status/--id/--aim/--note.",
+                    highlight=False,
+                )
+            raise typer.Exit(1)
+        row = get_job(conn, project, update)
+        console.print(
+            f"[bold green]⟳[/bold green] job [cyan]#{update}[/cyan] "
+            f"[yellow]{row['status']}[/yellow] [dim]({_compact_cwd(project)})[/dim]",
+            highlight=False,
+        )
+        return
+
+    if not body:
+        console.print(
+            "[red]No job title given.[/red] Pass a description, e.g. "
+            '`agi job "H100 sweep" --id 481923 --aim <run>`.',
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    row_id = add_job(
+        conn,
+        project=project,
+        title=body,
+        job_id=job_id,
+        aim=aim,
+        status=status or "submitted",
+        note=note,
+    )
+    extras = []
+    if job_id:
+        extras.append(f"id {job_id}")
+    if aim:
+        extras.append(f"aim {aim}")
+    suffix = f" [dim]({' · '.join(extras)})[/dim]" if extras else ""
+    console.print(
+        f"[bold green]☁[/bold green] tracked job [cyan]#{row_id}[/cyan] "
+        f"[yellow]{status or 'submitted'}[/yellow]{suffix} "
+        f"[dim]({_compact_cwd(project)})[/dim]",
+        highlight=False,
+    )
+
+
+@app.command("jobs")
+def cmd_jobs(
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s", help="Only show jobs with this status."
+    ),
+    open_only: bool = typer.Option(
+        False, "--open", help="Only show in-flight jobs (submitted/running)."
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max jobs to show."),
+    rm: Optional[int] = typer.Option(
+        None, "--rm", help="Delete the tracked job with this id from this project."
+    ),
+) -> None:
+    """List this project's tracked cluster/remote jobs (recorded via `agi job`)."""
+    from agent_interface.jobs import list_jobs, project_key, remove_job
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-c7780666", source="jobs")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+
+    if rm is not None:
+        if remove_job(conn, project, rm):
+            console.print(f"[dim]removed job #{rm}[/dim]")
+        else:
+            console.print(
+                f"[red]No job #{rm} in {_compact_cwd(project)}.[/red]",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        return
+
+    jobs = list_jobs(conn, project, status=status, open_only=open_only, limit=limit)
+    if not jobs:
+        console.print(
+            f"[dim]No jobs tracked for {_compact_cwd(project)} yet. "
+            'Record one with `agi job "<title>" --id <cluster-id>`.[/dim]'
+        )
+        return
+
+    status_styles = {
+        "submitted": "yellow",
+        "running": "green",
+        "done": "dim",
+        "failed": "red",
+        "cancelled": "dim red",
+    }
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] jobs")
+    table = Table(show_header=True, box=None, pad_edge=False, padding=(0, 1, 0, 2))
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("WHEN", style="dim", no_wrap=True)
+    table.add_column("STATUS", no_wrap=True)
+    table.add_column("JOB", style="magenta", no_wrap=True)
+    table.add_column("AIM", overflow="ellipsis", max_width=34, style="blue")
+    table.add_column("TITLE", overflow="ellipsis", max_width=44)
+
+    for j in jobs:
+        when = _relative_time(
+            datetime.fromtimestamp(j["updated_at"], tz=timezone.utc).isoformat()
+        )
+        st = Text(j["status"], style=status_styles.get(j["status"], "white"))
+        table.add_row(
+            str(j["id"]),
+            when,
+            st,
+            j["job_id"] or "—",
+            j["aim"] or "—",
+            j["title"],
+        )
+    console.print(table)
+
+
 @app.command("features")
 def cmd_features() -> None:
     """Show autonomously-shipped features and whether they've been used."""
