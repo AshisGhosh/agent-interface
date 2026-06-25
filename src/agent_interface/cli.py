@@ -530,12 +530,13 @@ def cmd_doctor() -> None:
 
     conn = get_connection()
     summary = reconcile(conn)
-    reaped = summary["reaped_exited"] + summary["reaped_reused"]
+    reaped = summary["reaped_exited"] + summary["reaped_reused"] + summary["reaped_pidless"]
     console.print(
-        f"Checked [cyan]{summary['checked']}[/cyan] live session(s); "
+        f"Checked [cyan]{summary['checked']}[/cyan] session(s); "
         f"reaped [yellow]{reaped}[/yellow] "
         f"([dim]{summary['reaped_exited']} exited, "
-        f"{summary['reaped_reused']} pid-reused[/dim])."
+        f"{summary['reaped_reused']} pid-reused, "
+        f"{summary['reaped_pidless']} pidless-stale[/dim])."
     )
 
 
@@ -585,7 +586,8 @@ def cmd_heartbeat() -> None:
     try:
         conn = get_connection()
         summary = reconcile(conn)
-        steps.append(f"reconcile(reaped={summary['reaped_exited'] + summary['reaped_reused']})")
+        reaped = summary["reaped_exited"] + summary["reaped_reused"] + summary["reaped_pidless"]
+        steps.append(f"reconcile(reaped={reaped})")
     except Exception as e:  # noqa: BLE001
         steps.append(f"reconcile!{type(e).__name__}")
 

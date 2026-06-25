@@ -58,14 +58,30 @@ def test_unknown_identity_is_conservative(conn, monkeypatch):
     assert get_session(conn, "s1").state == SessionState.RUNNING
 
 
-def test_skips_pidless_sessions(conn, monkeypatch):
+def test_keeps_recent_pidless_session(conn, monkeypatch):
+    """A just-registered pid-less session (not yet stale) must not be reaped —
+    dispatched sessions are pid-less until their first hook anchors a pid."""
     register_session(conn, Session(id="s1", state="running", pid=None))
     monkeypatch.setattr(reg_mod, "_pid_alive", lambda pid: False)
 
     summary = reconcile(conn)
 
-    assert summary["checked"] == 0
+    assert summary["reaped_pidless"] == 0
     assert get_session(conn, "s1").state == SessionState.RUNNING
+
+
+def test_reaps_stale_pidless_session(conn):
+    """A pid-less session with no heartbeat for ages is a dead phantom
+    (the 68-day 'ns-steps-3-full-wallclock' case) — reap it."""
+    register_session(conn, Session(
+        id="s1", state="running", pid=None,
+        last_seen_at="2020-01-01T00:00:00Z",
+    ))
+
+    summary = reconcile(conn)
+
+    assert summary["reaped_pidless"] == 1
+    assert get_session(conn, "s1").state == SessionState.DONE
 
 
 def test_ignores_terminal_sessions(conn, monkeypatch):

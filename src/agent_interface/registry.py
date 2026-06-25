@@ -278,16 +278,33 @@ def reconcile(conn: sqlite3.Connection) -> dict[str, int]:
     """
     from agent_interface.scan import _pid_identity
 
-    summary = {"checked": 0, "reaped_exited": 0, "reaped_reused": 0}
+    summary = {"checked": 0, "reaped_exited": 0, "reaped_reused": 0, "reaped_pidless": 0}
     rows = conn.execute(
         "SELECT * FROM sessions WHERE state NOT IN ('done','archived')",
     ).fetchall()
 
     for row in rows:
         session = _row_to_session(row)
-        if session.pid is None:
-            continue
         summary["checked"] += 1
+
+        # Pid-less sessions can't be liveness-checked. A real session gets a pid
+        # from its hooks within seconds, so a pid-less row that's also stale
+        # (no heartbeat for the stale window) is a dead phantom — reap it. A
+        # recently-registered pid-less session (e.g. just dispatched) is not yet
+        # stale, so it's safe.
+        if session.pid is None:
+            if _is_stale(session):
+                now = _now_utc()
+                conn.execute(
+                    "UPDATE sessions SET state=?, updated_at=? WHERE id=?",
+                    (SessionState.DONE, now, session.id),
+                )
+                _append_event(
+                    conn, session.id, "auto_closed",
+                    {"reason": "pidless_stale", "last_seen_at": session.last_seen_at},
+                )
+                summary["reaped_pidless"] += 1
+            continue
 
         alive = _pid_alive(session.pid)
         # Identity is only meaningful for a live pid; None means "can't tell"
