@@ -1170,6 +1170,261 @@ def cmd_findings(
         )
 
 
+scaffold_app = typer.Typer(
+    help="Reusable code-scaffold library (save a template once, stamp it out anywhere)."
+)
+app.add_typer(scaffold_app, name="scaffold")
+
+
+@scaffold_app.command("save")
+def cmd_scaffold_save(
+    name: str = typer.Argument(..., help="Scaffold name, e.g. 'react-component'."),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f", help="Read the template body from this file."
+    ),
+    body: Optional[str] = typer.Option(
+        None, "--body", "-b", help="Template body inline (else --file, else stdin)."
+    ),
+    desc: Optional[str] = typer.Option(
+        None, "--desc", "-d", help="One-line description of what this scaffolds."
+    ),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Scope to this project (git root, else cwd) instead of global.",
+    ),
+) -> None:
+    """Save a reusable code template, with `{{placeholder}}` holes, by name.
+
+    Body comes from `--body`, else `--file`, else stdin. Saved global by default
+    so it travels across every project; `--project` scopes it to this repo and
+    shadows a global of the same name. Re-saving a name overwrites it. Stamp a
+    filled copy out later with `agi scaffold new <name> <dest> --var k=v`.
+    """
+    import sys
+    from pathlib import Path
+
+    from agent_interface.scaffold import placeholders, project_key, save_scaffold
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-572904ee", source="scaffold-save")
+
+    if body is not None:
+        text = body
+    elif file is not None:
+        try:
+            text = Path(file).expanduser().read_text()
+        except OSError as e:
+            console.print(f"[red]Could not read {file}:[/red] {e}", highlight=False)
+            raise typer.Exit(1)
+    elif not sys.stdin.isatty():
+        text = sys.stdin.read()
+    else:
+        console.print(
+            "[red]No template body.[/red] Pass --body, --file, or pipe via stdin, "
+            "e.g. `agi scaffold save react-component --file Button.tsx`.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    if not text.strip():
+        console.print("[red]Refusing to save an empty scaffold.[/red]")
+        raise typer.Exit(1)
+
+    scope = project_key(os.getcwd()) if project else "global"
+    conn = get_connection()
+    _id, created = save_scaffold(
+        conn, name=name, body=text, scope=scope, description=desc
+    )
+
+    holes = placeholders(text)
+    where = _compact_cwd(scope) if project else "global"
+    verb = "saved" if created else "updated"
+    hole_str = ""
+    if holes:
+        hole_str = " · holes: " + ", ".join(f"[cyan]{h}[/cyan]" for h in holes)
+    console.print(
+        f"[bold green]✦[/bold green] {verb} scaffold [magenta]{name}[/magenta] "
+        f"[dim]({where})[/dim]{hole_str}",
+        highlight=False,
+    )
+
+
+@scaffold_app.command("list")
+def cmd_scaffold_list() -> None:
+    """List scaffolds available here — globals plus this project's own."""
+    from agent_interface.scaffold import list_scaffolds, placeholders, project_key
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-572904ee", source="scaffold-list")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    rows = list_scaffolds(conn, project=project)
+    if not rows:
+        console.print(
+            "[dim]No scaffolds yet. Save one with "
+            "`agi scaffold save <name> --file <path>`.[/dim]"
+        )
+        return
+
+    table = Table(show_edge=False)
+    table.add_column("name", style="magenta")
+    table.add_column("scope", style="dim")
+    table.add_column("holes", style="cyan")
+    table.add_column("description")
+    for r in rows:
+        scope = "global" if r["scope"] == "global" else _compact_cwd(r["scope"])
+        holes = ", ".join(placeholders(r["body"])) or "—"
+        table.add_row(r["name"], scope, holes, r["description"] or "—")
+    console.print(table)
+
+
+@scaffold_app.command("show")
+def cmd_scaffold_show(
+    name: str = typer.Argument(..., help="Scaffold name to print."),
+) -> None:
+    """Print a scaffold's raw template body and its placeholders."""
+    from agent_interface.scaffold import get_scaffold, placeholders, project_key
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-572904ee", source="scaffold-show")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    row = get_scaffold(conn, name, project=project)
+    if row is None:
+        console.print(
+            f"[red]No scaffold named '{name}'.[/red] See `agi scaffold list`.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    holes = placeholders(row["body"])
+    hole_str = ", ".join(holes) if holes else "none"
+    scope = "global" if row["scope"] == "global" else _compact_cwd(row["scope"])
+    console.print(
+        f"[bold]{name}[/bold] [dim]({scope})[/dim] · holes: [cyan]{hole_str}[/cyan]",
+        highlight=False,
+    )
+    if row["description"]:
+        console.print(f"[dim]{row['description']}[/dim]", highlight=False)
+    console.print(row["body"], highlight=False, markup=False)
+
+
+@scaffold_app.command("new")
+def cmd_scaffold_new(
+    name: str = typer.Argument(..., help="Scaffold name to render."),
+    dest: Optional[str] = typer.Argument(
+        None, help="Output file path; omit to print to stdout."
+    ),
+    var: Optional[list[str]] = typer.Option(
+        None, "--var", "-v", help="Fill a placeholder: key=value (repeatable)."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite dest if it already exists."
+    ),
+) -> None:
+    """Render a scaffold, filling `{{placeholder}}` holes, to a file or stdout.
+
+    Provide values with repeated `--var key=value`. Unfilled holes are left
+    verbatim and reported so a partial render is still obviously a template.
+    """
+    from pathlib import Path
+
+    from agent_interface.scaffold import (
+        get_scaffold,
+        parse_var,
+        project_key,
+        render,
+    )
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-572904ee", source="scaffold-new")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    row = get_scaffold(conn, name, project=project)
+    if row is None:
+        console.print(
+            f"[red]No scaffold named '{name}'.[/red] See `agi scaffold list`.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    variables: dict[str, str] = {}
+    for item in var or []:
+        try:
+            key, value = parse_var(item)
+        except ValueError:
+            console.print(
+                f"[red]Bad --var {item!r}.[/red] Use key=value, e.g. "
+                "`--var name=SpellBar`.",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        variables[key] = value
+
+    rendered, missing = render(row["body"], variables)
+
+    if dest is not None:
+        out = Path(dest).expanduser()
+        if out.exists() and not force:
+            console.print(
+                f"[red]{dest} already exists.[/red] Pass --force to overwrite.",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(rendered)
+        except OSError as e:
+            console.print(f"[red]Could not write {dest}:[/red] {e}", highlight=False)
+            raise typer.Exit(1)
+        console.print(
+            f"[bold green]✦[/bold green] wrote [magenta]{name}[/magenta] → "
+            f"[bold]{dest}[/bold]",
+            highlight=False,
+        )
+    else:
+        # Rendered template is the payload — print raw so it can be piped.
+        print(rendered, end="" if rendered.endswith("\n") else "\n")
+
+    if missing:
+        console.print(
+            "[yellow]unfilled holes:[/yellow] "
+            + ", ".join(f"[cyan]{m}[/cyan]" for m in missing)
+            + " [dim](pass with --var)[/dim]",
+            highlight=False,
+        )
+
+
+@scaffold_app.command("rm")
+def cmd_scaffold_rm(
+    name: str = typer.Argument(..., help="Scaffold name to delete."),
+    project: bool = typer.Option(
+        False, "--project", "-p",
+        help="Delete this project's scoped scaffold instead of the global one.",
+    ),
+) -> None:
+    """Delete a scaffold by name (global by default, `--project` for project scope)."""
+    from agent_interface.scaffold import project_key, remove_scaffold
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-572904ee", source="scaffold-rm")
+
+    scope = project_key(os.getcwd()) if project else "global"
+    conn = get_connection()
+    if remove_scaffold(conn, name, scope=scope):
+        where = _compact_cwd(scope) if project else "global"
+        console.print(f"[dim]removed scaffold '{name}' ({where})[/dim]")
+    else:
+        console.print(
+            f"[red]No scaffold named '{name}' in that scope.[/red]",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+
 def _fmt_scores(scores: list) -> str:
     """Render an ordered ``[(criterion, score), ...]`` list inline."""
     return "  ".join(

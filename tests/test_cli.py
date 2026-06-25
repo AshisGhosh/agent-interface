@@ -415,3 +415,117 @@ def test_flakes_name_filter():
     out = runner.invoke(app, ["flakes", "--name", "motor"]).output
     assert "motor-stop" in out
     assert "nav-plan" not in out
+
+
+# ── scaffold ─────────────────────────────────────────────────────────────────
+
+
+def test_scaffold_save_and_list():
+    result = runner.invoke(
+        app, ["scaffold", "save", "comp", "--body", "class {{name}} {}"]
+    )
+    assert result.exit_code == 0
+    assert "comp" in result.output
+    out = runner.invoke(app, ["scaffold", "list"]).output
+    assert "comp" in out
+    assert "name" in out  # placeholder surfaced in the listing
+
+
+def test_scaffold_list_empty():
+    out = runner.invoke(app, ["scaffold", "list"]).output
+    assert "No scaffolds" in out
+
+
+def test_scaffold_save_rejects_empty_body():
+    result = runner.invoke(app, ["scaffold", "save", "comp", "--body", "   "])
+    assert result.exit_code == 1
+    assert "empty" in result.output.lower()
+
+
+def test_scaffold_show():
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "hi {{who}}"])
+    out = runner.invoke(app, ["scaffold", "show", "comp"]).output
+    assert "hi {{who}}" in out
+    assert "who" in out
+
+
+def test_scaffold_show_missing():
+    result = runner.invoke(app, ["scaffold", "show", "nope"])
+    assert result.exit_code == 1
+    assert "No scaffold" in result.output
+
+
+def test_scaffold_new_renders_to_file(tmp_path):
+    runner.invoke(
+        app, ["scaffold", "save", "comp", "--body", "<{{tag}}>hello</{{tag}}>"]
+    )
+    dest = tmp_path / "out.txt"
+    result = runner.invoke(
+        app, ["scaffold", "new", "comp", str(dest), "--var", "tag=Spell"]
+    )
+    assert result.exit_code == 0
+    assert dest.read_text() == "<Spell>hello</Spell>"
+
+
+def test_scaffold_new_reports_missing_holes(tmp_path):
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "{{a}} {{b}}"])
+    dest = tmp_path / "out.txt"
+    result = runner.invoke(
+        app, ["scaffold", "new", "comp", str(dest), "--var", "a=1"]
+    )
+    assert result.exit_code == 0
+    assert "unfilled" in result.output
+    assert "b" in result.output
+    assert dest.read_text() == "1 {{b}}"  # missing hole left verbatim
+
+
+def test_scaffold_new_to_stdout():
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "x={{v}}"])
+    out = runner.invoke(
+        app, ["scaffold", "new", "comp", "--var", "v=42"]
+    ).output
+    assert "x=42" in out
+
+
+def test_scaffold_new_refuses_overwrite_without_force(tmp_path):
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "new"])
+    dest = tmp_path / "out.txt"
+    dest.write_text("existing")
+    result = runner.invoke(app, ["scaffold", "new", "comp", str(dest)])
+    assert result.exit_code == 1
+    assert "--force" in result.output
+    assert dest.read_text() == "existing"  # untouched
+    forced = runner.invoke(
+        app, ["scaffold", "new", "comp", str(dest), "--force"]
+    )
+    assert forced.exit_code == 0
+    assert dest.read_text() == "new"
+
+
+def test_scaffold_new_bad_var():
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "{{v}}"])
+    result = runner.invoke(app, ["scaffold", "new", "comp", "--var", "noequals"])
+    assert result.exit_code == 1
+    assert "Bad --var" in result.output
+
+
+def test_scaffold_rm():
+    runner.invoke(app, ["scaffold", "save", "comp", "--body", "x"])
+    result = runner.invoke(app, ["scaffold", "rm", "comp"])
+    assert result.exit_code == 0
+    assert runner.invoke(app, ["scaffold", "show", "comp"]).exit_code == 1
+
+
+def test_scaffold_rm_missing():
+    result = runner.invoke(app, ["scaffold", "rm", "nope"])
+    assert result.exit_code == 1
+    assert "No scaffold" in result.output
+
+
+def test_scaffold_save_from_file(tmp_path):
+    src = tmp_path / "tpl.tsx"
+    src.write_text("export const {{name}} = () => null")
+    result = runner.invoke(app, ["scaffold", "save", "comp", "--file", str(src)])
+    assert result.exit_code == 0
+    out = runner.invoke(app, ["scaffold", "show", "comp"]).output
+    assert "export const {{name}}" in out

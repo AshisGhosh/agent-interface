@@ -483,6 +483,42 @@ Scores are freeform numbers — pick any scale (0–10, 1–5, percent) and stay
 consistent within a subject. A criterion that shows `↓` in `--trend` is one a
 later iteration made worse: fix the regression before shipping.
 
+## Reusable code scaffolds (`agi scaffold`)
+
+Agents keep rebuilding the *same shape* of thing across projects and across
+sessions: a UI component skeleton, an input/touch-controls handler, a test
+harness, a CLI subcommand. The good version gets written once and then re-derived
+from scratch next time, because the knowledge died with the session.
+
+`agi scaffold` is a tiny library for that. Save a named template — code with
+`{{placeholder}}` holes — once, then stamp a filled-in copy out to a file from
+**any** project later. Scaffolds are **global by default** so they travel across
+every project; pass `--project` to scope one to the current repo (git root, else
+cwd), where it shadows a global of the same name. It's distinct from the other
+ledgers: `agi note` captures prose, `agi run` captures commands, `agi finding`
+captures numeric results — this captures *renderable code templates*.
+
+```bash
+# Save a template (from a file, --body, or piped stdin). {{...}} marks a hole.
+agi scaffold save spell-ui --file SpellBar.tsx --desc "spell HUD component"
+echo 'export const {{name}} = () => null' | agi scaffold save react-component
+
+# See what's available here (globals + this project's own) and inspect one.
+agi scaffold list
+agi scaffold show spell-ui          # prints the body and its placeholders
+
+# Stamp a filled copy out to a file (creates parent dirs; --force to overwrite).
+agi scaffold new react-component src/SpellBar.tsx --var name=SpellBar
+agi scaffold new react-component --var name=X     # no dest → prints to stdout
+
+# Save a project-specific variant, then drop a scaffold you no longer want.
+agi scaffold save react-component --file local.tsx --project
+agi scaffold rm react-component      # add --project to remove the scoped one
+```
+
+Unfilled holes are left verbatim in the output and reported, so a partial render
+is still obviously a template you need to finish.
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session
