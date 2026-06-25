@@ -345,6 +345,36 @@ and a bounded tail of its output. The command's own exit code is propagated, so
 preserved when you pass the whole command as a single quoted argument
 (`agi run "make && ./run_eval.sh | tee out.log"`).
 
+## Project notebook (`agi note` / `agi notes`)
+
+Agents repeatedly land in a project, *figure something out* — the build
+incantation, why an approach failed, the env var a test needs, "try X, not Y" —
+and then that knowledge dies with the session. The very next agent, often
+literally told *"try adding it again yourself,"* rediscovers it from scratch.
+
+`agi note` is a tiny project-scoped notebook for exactly that knowledge. It is
+distinct from the command runbook (`agi run`): the runbook journals *commands
+that ran*; the notebook captures *freeform knowledge* — gotchas, decisions, and
+"do this not that" hints. Like the runbook it works from **any** project
+directory: notes are keyed by the git repo root (falling back to the cwd), so
+they're shared across subdirectories and notes from different projects never mix.
+
+```bash
+# Leave a breadcrumb for the next session in this project.
+agi note "build needs node 18; nvm use 18 before pnpm install"
+
+# Tag a note to group it (e.g. ci, gotcha, todo).
+agi note --tag ci "the integration suite is flaky — retry once before debugging"
+
+# Read this project's notebook (newest first).
+agi notes
+agi notes --tag ci                # only notes tagged ci
+agi notes --search "node"         # only notes mentioning "node"
+
+# Drop a note once it's stale.
+agi notes --rm 3
+```
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session

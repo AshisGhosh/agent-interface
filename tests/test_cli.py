@@ -220,3 +220,63 @@ def test_runs_name_filter():
     assert result.exit_code == 0
     assert "nav-run" in result.output
     assert "eval-run" not in result.output
+
+
+# ── note / notes (project notebook) ─────────────────────────────────────────────
+
+
+def test_note_records_and_lists():
+    result = runner.invoke(app, ["note", "build", "needs", "node", "18"])
+    assert result.exit_code == 0
+    assert "noted" in result.output
+
+    result = runner.invoke(app, ["notes"])
+    assert result.exit_code == 0
+    assert "build needs node 18" in result.output
+
+
+def test_note_requires_text():
+    result = runner.invoke(app, ["note"])
+    assert result.exit_code == 1
+    assert "No note given" in result.output
+
+
+def test_notes_empty():
+    result = runner.invoke(app, ["notes"])
+    assert result.exit_code == 0
+    assert "No notes" in result.output
+
+
+def test_notes_tag_filter():
+    runner.invoke(app, ["note", "--tag", "ci", "retry", "flaky", "test"])
+    runner.invoke(app, ["note", "general", "hint"])
+    result = runner.invoke(app, ["notes", "--tag", "ci"])
+    assert result.exit_code == 0
+    assert "retry flaky test" in result.output
+    assert "general hint" not in result.output
+
+
+def test_notes_search_filter():
+    runner.invoke(app, ["note", "the deploy command is fly deploy"])
+    runner.invoke(app, ["note", "unrelated thing"])
+    result = runner.invoke(app, ["notes", "--search", "deploy"])
+    assert result.exit_code == 0
+    assert "fly deploy" in result.output
+    assert "unrelated thing" not in result.output
+
+
+def test_notes_remove():
+    runner.invoke(app, ["note", "ephemeral"])
+    listed = runner.invoke(app, ["notes"])
+    assert "ephemeral" in listed.output
+    # first (only) note is id #1
+    result = runner.invoke(app, ["notes", "--rm", "1"])
+    assert result.exit_code == 0
+    assert "removed note #1" in result.output
+    assert "ephemeral" not in runner.invoke(app, ["notes"]).output
+
+
+def test_notes_remove_missing():
+    result = runner.invoke(app, ["notes", "--rm", "999"])
+    assert result.exit_code == 1
+    assert "No note #999" in result.output

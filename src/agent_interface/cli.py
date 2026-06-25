@@ -779,6 +779,101 @@ def cmd_runs(
     console.print(table)
 
 
+@app.command("note")
+def cmd_note(
+    text: Optional[list[str]] = typer.Argument(
+        None, help="The note to leave for the next agent in this project."
+    ),
+    tag: Optional[str] = typer.Option(
+        None, "--tag", "-t", help="Optional label to group/filter the note."
+    ),
+) -> None:
+    """Leave a note in this project's notebook for the next session.
+
+    Captures freeform knowledge — a gotcha, a decision, a "try X not Y" hint —
+    keyed by the project (git root, else cwd) so the next agent can read it back
+    with `agi notes`. Distinct from `agi run`, which journals commands.
+    Works from any project directory.
+    """
+    from agent_interface.notes import add_note, project_key
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-49daff52", source="note")
+
+    body = " ".join(text).strip() if text else ""
+    if not body:
+        console.print(
+            "[red]No note given.[/red] Pass the note text, e.g. "
+            '`agi note "build needs node 18"`.',
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    note_id = add_note(conn, project=project, note=body, tag=tag)
+    label = f" [dim]#{tag}[/dim]" if tag else ""
+    console.print(
+        f"[bold green]✎[/bold green] noted{label} [dim](#{note_id} · "
+        f"{_compact_cwd(project)})[/dim]",
+        highlight=False,
+    )
+
+
+@app.command("notes")
+def cmd_notes(
+    tag: Optional[str] = typer.Option(
+        None, "--tag", "-t", help="Only show notes with this tag."
+    ),
+    search: Optional[str] = typer.Option(
+        None, "--search", "-s", help="Only show notes matching this text."
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max notes to show."),
+    rm: Optional[int] = typer.Option(
+        None, "--rm", help="Delete the note with this id from this project."
+    ),
+) -> None:
+    """Read back this project's notebook (notes left via `agi note`)."""
+    from agent_interface.notes import list_notes, project_key, remove_note
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-49daff52", source="notes")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+
+    if rm is not None:
+        if remove_note(conn, project, rm):
+            console.print(f"[dim]removed note #{rm}[/dim]")
+        else:
+            console.print(
+                f"[red]No note #{rm} in {_compact_cwd(project)}.[/red]",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        return
+
+    notes = list_notes(conn, project, tag=tag, query=search, limit=limit)
+    if not notes:
+        console.print(
+            f"[dim]No notes for {_compact_cwd(project)} yet. "
+            'Leave one with `agi note "<text>"`.[/dim]'
+        )
+        return
+
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] notebook")
+    for n in notes:
+        when = _relative_time(
+            datetime.fromtimestamp(n["created_at"], tz=timezone.utc).isoformat()
+        )
+        tag_label = f" [magenta]#{n['tag']}[/magenta]" if n["tag"] else ""
+        console.print(
+            f"  [cyan]#{n['id']}[/cyan]{tag_label} [dim]{when}[/dim]\n"
+            f"    {n['note']}",
+            highlight=False,
+        )
+
+
 @app.command("features")
 def cmd_features() -> None:
     """Show autonomously-shipped features and whether they've been used."""
