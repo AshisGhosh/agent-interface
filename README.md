@@ -410,6 +410,45 @@ agi jobs --rm 1
 
 Statuses are `submitted`, `running`, `done`, `failed`, and `cancelled`.
 
+## Experiment findings ledger (`agi finding` / `agi findings`)
+
+Research/ML agents iterate over *variants* of an experiment — "v3:
+distance-prediction aux task replacing minimap recon" — and the thing that
+actually matters, *which variant won on which metric*, ends up scattered across
+scrollback, figures, and one-off prints. The next session (often the same agent
+after a context reset) is left "looking at all the outputs and figures and
+logged findings" trying to reconstruct what beat what.
+
+`agi finding` is a tiny, structured ledger for exactly that. Log a labeled
+variant's result with an optional metric/value, then read it back with
+`agi findings` or rank variants head-to-head with `agi findings --compare`. It
+is distinct from the notebook (`agi note`, prose) and the runbook (`agi run`,
+commands): findings are *numeric results you can rank*. Like both it works from
+**any** project directory — findings are keyed by the git repo root (falling
+back to the cwd), so they're shared across subdirectories and never mix across
+projects.
+
+```bash
+# Log a variant's result as you measure it.
+agi finding v2-minimap-recon --metric val_loss --value 0.42
+agi finding v3-distance-pred --metric val_loss --value 0.31 --note "replaced minimap recon"
+
+# Read this project's findings back (newest first).
+agi findings
+agi findings --metric val_loss        # only findings for one metric
+agi findings --label v3-distance-pred # only one variant
+
+# Rank variants by their best value for a metric (best first).
+agi findings --compare --metric success_rate   # higher is better (default)
+agi findings --compare --metric val_loss --min # lower is better (loss-like)
+
+# Drop a finding once it's no longer interesting.
+agi findings --rm 1
+```
+
+`--compare` keeps the best value per variant and marks the winner, so a fresh
+session can see at a glance that v3 beat v2 without re-reading every figure.
+
 ## Example workflows
 
 ### Workflow 1: random ad hoc Claude session

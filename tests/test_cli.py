@@ -346,3 +346,61 @@ def test_jobs_remove():
     assert result.exit_code == 0
     assert "removed job #1" in result.output
     assert "ephemeral-job" not in runner.invoke(app, ["jobs"]).output
+
+
+# ── finding / findings ────────────────────────────────────────────────────────
+
+
+def test_finding_record_and_list():
+    result = runner.invoke(
+        app, ["finding", "v3-distance", "--metric", "acc", "--value", "0.85"]
+    )
+    assert result.exit_code == 0
+    assert "v3-distance" in result.output
+
+    result = runner.invoke(app, ["findings"])
+    assert result.exit_code == 0
+    assert "v3-distance" in result.output
+    assert "acc" in result.output
+
+
+def test_finding_requires_label():
+    result = runner.invoke(app, ["finding"])
+    assert result.exit_code == 1
+    assert "No label given" in result.output
+
+
+def test_finding_value_needs_metric():
+    result = runner.invoke(app, ["finding", "v1", "--value", "0.5"])
+    assert result.exit_code == 1
+    assert "--value needs --metric" in result.output
+
+
+def test_findings_compare_ranks_variants():
+    runner.invoke(app, ["finding", "v2-minimap", "--metric", "acc", "--value", "0.70"])
+    runner.invoke(app, ["finding", "v3-distance", "--metric", "acc", "--value", "0.90"])
+    result = runner.invoke(app, ["findings", "--compare", "--metric", "acc"])
+    assert result.exit_code == 0
+    # winner is marked and both variants appear
+    assert "v3-distance" in result.output
+    assert "v2-minimap" in result.output
+
+
+def test_findings_compare_needs_metric():
+    result = runner.invoke(app, ["findings", "--compare"])
+    assert result.exit_code == 1
+    assert "--compare needs --metric" in result.output
+
+
+def test_findings_empty():
+    result = runner.invoke(app, ["findings"])
+    assert result.exit_code == 0
+    assert "No findings" in result.output
+
+
+def test_findings_remove():
+    runner.invoke(app, ["finding", "ephemeral"])
+    result = runner.invoke(app, ["findings", "--rm", "1"])
+    assert result.exit_code == 0
+    assert "removed finding #1" in result.output
+    assert "ephemeral" not in runner.invoke(app, ["findings"]).output

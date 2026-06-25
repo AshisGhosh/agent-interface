@@ -874,6 +874,185 @@ def cmd_notes(
         )
 
 
+def _fmt_metric_value(value: Optional[float]) -> str:
+    """Render a metric value compactly: ints as ints, floats trimmed."""
+    if value is None:
+        return "—"
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}"
+
+
+@app.command("finding")
+def cmd_finding(
+    label: Optional[list[str]] = typer.Argument(
+        None, help="Variant/experiment name, e.g. 'v3-distance-pred'."
+    ),
+    metric: Optional[str] = typer.Option(
+        None, "--metric", "-m", help="Metric name, e.g. 'val_loss' or 'success_rate'."
+    ),
+    value: Optional[float] = typer.Option(
+        None, "--value", "-v", help="Numeric value for the metric."
+    ),
+    note: Optional[str] = typer.Option(
+        None, "--note", "-n", help="Optional freeform context for this result."
+    ),
+) -> None:
+    """Log an experiment result for this project's findings ledger.
+
+    Captures a labeled variant's result — an optional metric/value pair plus a
+    note — keyed by the project (git root, else cwd) so a later session can read
+    it back with `agi findings` or rank variants with `agi findings --compare`.
+    Distinct from `agi note` (prose) and `agi run` (commands). Works from any
+    project directory.
+    """
+    from agent_interface.findings import project_key, record_finding
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-27d124a5", source="finding")
+
+    name = " ".join(label).strip() if label else ""
+    if not name:
+        console.print(
+            "[red]No label given.[/red] Name the variant, e.g. "
+            '`agi finding v3-distance-pred --metric val_loss --value 0.23`.',
+            highlight=False,
+        )
+        raise typer.Exit(1)
+    if value is not None and metric is None:
+        console.print(
+            "[red]--value needs --metric.[/red] Name the metric the value is for, "
+            "e.g. `--metric val_loss --value 0.23`.",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+    fid = record_finding(
+        conn, project=project, label=name, metric=metric, value=value, note=note
+    )
+
+    detail = ""
+    if metric is not None:
+        detail = f" [cyan]{metric}[/cyan]=[bold]{_fmt_metric_value(value)}[/bold]"
+    console.print(
+        f"[bold green]✦[/bold green] logged [magenta]{name}[/magenta]{detail} "
+        f"[dim](#{fid} · {_compact_cwd(project)})[/dim]",
+        highlight=False,
+    )
+
+
+@app.command("findings")
+def cmd_findings(
+    metric: Optional[str] = typer.Option(
+        None, "--metric", "-m", help="Only show findings for this metric."
+    ),
+    label: Optional[str] = typer.Option(
+        None, "--label", "-l", help="Only show findings for this variant."
+    ),
+    compare: bool = typer.Option(
+        False, "--compare", "-c",
+        help="Rank variants by their best value for --metric (best first).",
+    ),
+    minimize: bool = typer.Option(
+        False, "--min",
+        help="With --compare, treat lower values as better (e.g. loss).",
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max findings to show."),
+    rm: Optional[int] = typer.Option(
+        None, "--rm", help="Delete the finding with this id from this project."
+    ),
+) -> None:
+    """Read back this project's findings ledger (logged via `agi finding`)."""
+    from agent_interface.findings import (
+        compare_findings,
+        list_findings,
+        project_key,
+        remove_finding,
+    )
+    from agent_interface.usage import record_usage
+
+    record_usage("feat-27d124a5", source="findings")
+
+    project = project_key(os.getcwd())
+    conn = get_connection()
+
+    if rm is not None:
+        if remove_finding(conn, project, rm):
+            console.print(f"[dim]removed finding #{rm}[/dim]")
+        else:
+            console.print(
+                f"[red]No finding #{rm} in {_compact_cwd(project)}.[/red]",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        return
+
+    if compare:
+        if metric is None:
+            console.print(
+                "[red]--compare needs --metric.[/red] Pick the metric to rank by, "
+                "e.g. `agi findings --compare --metric success_rate`.",
+                highlight=False,
+            )
+            raise typer.Exit(1)
+        ranked = compare_findings(
+            conn, project, metric, higher_is_better=not minimize
+        )
+        if not ranked:
+            console.print(
+                f"[dim]No '{metric}' values logged for "
+                f"{_compact_cwd(project)} yet.[/dim]"
+            )
+            return
+        order = "lower is better" if minimize else "higher is better"
+        table = Table(
+            title=f"{_compact_cwd(project)} · {metric} ({order})",
+            show_edge=False,
+        )
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("variant", style="magenta")
+        table.add_column(metric, justify="right")
+        table.add_column("runs", justify="right", style="dim")
+        for rank, e in enumerate(ranked, 1):
+            marker = "[bold green]★[/bold green]" if rank == 1 else str(rank)
+            table.add_row(
+                marker,
+                e["label"],
+                _fmt_metric_value(e["best"]),
+                str(e["runs"]),
+            )
+        console.print(table)
+        return
+
+    findings = list_findings(conn, project, metric=metric, label=label, limit=limit)
+    if not findings:
+        console.print(
+            f"[dim]No findings for {_compact_cwd(project)} yet. "
+            'Log one with `agi finding <variant> --metric <m> --value <v>`.[/dim]'
+        )
+        return
+
+    console.print(f"[bold]{_compact_cwd(project)}[/bold] findings")
+    for f in findings:
+        when = _relative_time(
+            datetime.fromtimestamp(f["created_at"], tz=timezone.utc).isoformat()
+        )
+        result = ""
+        if f["metric"] is not None:
+            result = (
+                f" [cyan]{f['metric']}[/cyan]="
+                f"[bold]{_fmt_metric_value(f['value'])}[/bold]"
+            )
+        note = f"\n    {f['note']}" if f["note"] else ""
+        console.print(
+            f"  [dim]#{f['id']}[/dim] [magenta]{f['label']}[/magenta]{result} "
+            f"[dim]{when}[/dim]{note}",
+            highlight=False,
+        )
+
+
 @app.command("job")
 def cmd_job(
     title: Optional[list[str]] = typer.Argument(
