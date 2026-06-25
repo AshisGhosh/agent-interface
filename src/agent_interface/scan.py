@@ -146,6 +146,54 @@ def _get_parent_pid(pid: int) -> Optional[int]:
         return None
 
 
+def _proc_cmdline(pid: int) -> Optional[str]:
+    """Read a process's command line from /proc, or None if unavailable."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_text()
+    except OSError:
+        return None
+    cmd = raw.replace("\x00", " ").strip()
+    return cmd or None
+
+
+def _pid_identity(pid: int) -> Optional[bool]:
+    """Best-effort identity check for a live pid.
+
+    Returns True if the process looks like a coding-agent session, False if it
+    is clearly something else (e.g. the pid was recycled by an unrelated
+    process), or None if identity can't be determined (no /proc, permission).
+    Callers should treat None conservatively (assume still alive).
+    """
+    cmd = _proc_cmdline(pid)
+    if cmd is None:
+        return None
+    low = cmd.lower()
+    if "agi " in low or "agent_interface" in low:
+        return False
+    return "claude" in low
+
+
+def resolve_agent_pid(start_pid: int, max_depth: int = 40) -> Optional[int]:
+    """Walk up the process tree to the nearest coding-agent ancestor pid.
+
+    Hook commands are usually launched through a short-lived shell, so the pid
+    a hook sees (``os.getppid()``) dies almost immediately. Anchoring a session
+    to that pid makes it look dead the moment the shell exits — the agent is
+    still running. This finds the long-lived agent process instead, so session
+    liveness tracks reality. Returns None if no agent ancestor is found.
+    """
+    visited: set[int] = set()
+    current: Optional[int] = start_pid
+    depth = 0
+    while current and current > 1 and current not in visited and depth < max_depth:
+        visited.add(current)
+        if _pid_identity(current) is True:
+            return current
+        current = _get_parent_pid(current)
+        depth += 1
+    return None
+
+
 def _find_tmux_context(
     pid: int, pane_map: dict[int, tuple[str, str, str]],
 ) -> Optional[tuple[str, str, str]]:

@@ -117,26 +117,42 @@ def register_session(conn: sqlite3.Connection, session: Session) -> Session:
     return session
 
 
-def find_session(conn: sqlite3.Connection, query: str) -> list[Session]:
+def find_session(
+    conn: sqlite3.Connection, query: str, *, active_only: bool = False,
+) -> list[Session]:
     """Find sessions matching a query against id, label, cwd, or pid.
 
-    Returns all matches (caller decides how to handle 0, 1, or many).
+    Returns all matches (caller decides how to handle 0, 1, or many). When
+    ``active_only`` is set, terminal sessions (done/archived) are excluded —
+    used for reply routing so a query can't resolve to a dead session whose
+    tmux pane no longer exists.
     """
+    terminal = (SessionState.DONE, SessionState.ARCHIVED)
+
     # Exact ID match first.
     row = conn.execute("SELECT * FROM sessions WHERE id=?", (query,)).fetchone()
     if row is not None:
-        return [_maybe_reap(conn, _row_to_session(row))]
+        session = _maybe_reap(conn, _row_to_session(row))
+        if active_only and session.state in terminal:
+            return []
+        return [session]
 
-    # Search across fields with LIKE, excluding archived.
+    # Search across fields with LIKE.
+    state_clause = (
+        "AND state NOT IN ('archived','done')" if active_only else "AND state != 'archived'"
+    )
     pattern = f"%{query}%"
     rows = conn.execute(
-        """SELECT * FROM sessions
+        f"""SELECT * FROM sessions
            WHERE (id LIKE ? OR label LIKE ? OR cwd LIKE ? OR CAST(pid AS TEXT) = ?)
-             AND state != 'archived'
+             {state_clause}
            ORDER BY updated_at DESC""",
         (pattern, pattern, pattern, query),
     ).fetchall()
-    return [_maybe_reap(conn, _row_to_session(r)) for r in rows]
+    results = [_maybe_reap(conn, _row_to_session(r)) for r in rows]
+    if active_only:
+        results = [s for s in results if s.state not in terminal]
+    return results
 
 
 def get_session(conn: sqlite3.Connection, session_id: str) -> Optional[Session]:
@@ -246,6 +262,55 @@ def restore_session(conn: sqlite3.Connection, session_id: str) -> Optional[Sessi
 def is_stale(session: Session) -> bool:
     """Public accessor for stale check."""
     return _is_stale(session)
+
+
+def reconcile(conn: sqlite3.Connection) -> dict[str, int]:
+    """Reconcile the registry against live processes — the self-healing tick.
+
+    For every non-terminal session, verify its pid still points at a live
+    agent process. Reap sessions whose process has exited (classic stale) or
+    whose pid was recycled by an unrelated process (pid reuse → phantom
+    'running' that would otherwise live forever). Runs deliberately (via
+    ``agi doctor`` / the heartbeat), not on every read, so the conservative
+    auto-reap on the hot path stays simple.
+
+    Returns a summary: {"checked", "reaped_exited", "reaped_reused"}.
+    """
+    from agent_interface.scan import _pid_identity
+
+    summary = {"checked": 0, "reaped_exited": 0, "reaped_reused": 0}
+    rows = conn.execute(
+        "SELECT * FROM sessions WHERE state NOT IN ('done','archived')",
+    ).fetchall()
+
+    for row in rows:
+        session = _row_to_session(row)
+        if session.pid is None:
+            continue
+        summary["checked"] += 1
+
+        alive = _pid_alive(session.pid)
+        # Identity is only meaningful for a live pid; None means "can't tell"
+        # (no /proc / permission) → leave it alone to avoid false reaping.
+        reused = alive and _pid_identity(session.pid) is False
+
+        if alive and not reused:
+            continue
+
+        reason = "pid_exited" if not alive else "pid_reused"
+        now = _now_utc()
+        conn.execute(
+            "UPDATE sessions SET state=?, updated_at=? WHERE id=?",
+            (SessionState.DONE, now, session.id),
+        )
+        _append_event(conn, session.id, "auto_closed", {"reason": reason, "pid": session.pid})
+        if alive:
+            summary["reaped_reused"] += 1
+        else:
+            summary["reaped_exited"] += 1
+
+    conn.commit()
+    return summary
 
 
 # ── events ───────────────────────────────────────────────────────────────────

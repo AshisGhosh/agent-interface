@@ -1,9 +1,12 @@
 """Tests for process scanning."""
 
+import agent_interface.scan as scan_mod
 from agent_interface.scan import (
     ProcessInfo,
     _looks_like_agent,
+    _pid_identity,
     deduplicate_by_pane,
+    resolve_agent_pid,
 )
 
 
@@ -69,3 +72,59 @@ def test_deduplicate_keeps_non_tmux():
     ]
     result = deduplicate_by_pane(procs)
     assert len(result) == 2
+
+
+# ── pid identity ──────────────────────────────────────────────────────────────
+
+
+def test_pid_identity_agent(monkeypatch):
+    monkeypatch.setattr(scan_mod, "_proc_cmdline", lambda pid: "claude --model opus")
+    assert _pid_identity(1) is True
+
+
+def test_pid_identity_not_agent(monkeypatch):
+    monkeypatch.setattr(scan_mod, "_proc_cmdline", lambda pid: "vim notes.md")
+    assert _pid_identity(1) is False
+
+
+def test_pid_identity_rejects_agi_itself(monkeypatch):
+    monkeypatch.setattr(scan_mod, "_proc_cmdline", lambda pid: "agi hook")
+    assert _pid_identity(1) is False
+
+
+def test_pid_identity_unknown_when_no_proc(monkeypatch):
+    monkeypatch.setattr(scan_mod, "_proc_cmdline", lambda pid: None)
+    assert _pid_identity(1) is None
+
+
+# ── resolve_agent_pid (anchor walk) ───────────────────────────────────────────
+
+
+def test_resolve_agent_pid_walks_past_shell(monkeypatch):
+    """Hook(101) → shell(101's parent=200) → claude(300). Resolves to 300."""
+    parents = {101: 200, 200: 300, 300: 1}
+    identities = {101: False, 200: False, 300: True}
+    monkeypatch.setattr(scan_mod, "_get_parent_pid", lambda pid: parents.get(pid))
+    monkeypatch.setattr(scan_mod, "_pid_identity", lambda pid: identities.get(pid))
+
+    assert resolve_agent_pid(101) == 300
+
+
+def test_resolve_agent_pid_immediate(monkeypatch):
+    monkeypatch.setattr(scan_mod, "_pid_identity", lambda pid: True)
+    assert resolve_agent_pid(555) == 555
+
+
+def test_resolve_agent_pid_none_when_no_agent(monkeypatch):
+    parents = {101: 200, 200: 1}
+    monkeypatch.setattr(scan_mod, "_get_parent_pid", lambda pid: parents.get(pid))
+    monkeypatch.setattr(scan_mod, "_pid_identity", lambda pid: False)
+    assert resolve_agent_pid(101) is None
+
+
+def test_resolve_agent_pid_handles_cycle(monkeypatch):
+    """A pathological parent cycle must not hang."""
+    parents = {101: 200, 200: 101}
+    monkeypatch.setattr(scan_mod, "_get_parent_pid", lambda pid: parents.get(pid))
+    monkeypatch.setattr(scan_mod, "_pid_identity", lambda pid: False)
+    assert resolve_agent_pid(101) is None

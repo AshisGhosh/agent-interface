@@ -311,7 +311,8 @@ def test_handle_at_reply_no_match(tg, conn):
     tg._handle_at_reply("@nonexistent hello")
 
     messages = [d["text"] for m, d in tg._test_api_calls if m == "sendMessage"]
-    assert any("No session" in msg for msg in messages)
+    # Reply routing is active-only, so an unmatched query reports no *active* session.
+    assert any("No active session" in msg for msg in messages)
 
 
 # ── reply target ─────────────────────────────────────────────────────────────

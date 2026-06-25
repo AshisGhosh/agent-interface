@@ -18,6 +18,7 @@ from agent_interface.registry import (
     rename_session,
     update_state,
 )
+from agent_interface.scan import resolve_agent_pid
 from agent_interface.states import SessionState
 
 # Hook events we care about and the state they map to.
@@ -362,11 +363,15 @@ def process_hook(payload: dict) -> str:
         return f"ignored: unknown event {event_name}"
 
     conn = get_connection()
-    pid = os.getppid()
+    hook_pid = os.getppid()
+    # The pid a hook sees is usually a short-lived shell. Anchor the session to
+    # the real long-lived agent process so it isn't reaped the instant that
+    # shell exits (which would mark a live session 'done' — a phantom).
+    agent_pid = resolve_agent_pid(hook_pid)
 
     # Try to adopt a scan-registered session by walking the process tree.
     # This must happen before checking by session_id so scan entries get merged.
-    scan_match = _find_by_pid_ancestry(conn, pid)
+    scan_match = _find_by_pid_ancestry(conn, hook_pid)
     if scan_match and scan_match.id != session_id:
         now = _now_utc()
         # Merge: delete any existing entry for this session_id (from a prior hook),
@@ -401,7 +406,7 @@ def process_hook(payload: dict) -> str:
             state=target_state.value,
             host=socket.gethostname(),
             cwd=cwd,
-            pid=pid,
+            pid=agent_pid or hook_pid,
         )
         register_session(conn, session)
         if event_name == "Stop":
@@ -411,6 +416,17 @@ def process_hook(payload: dict) -> str:
         elif event_name == "SessionEnd":
             _orchestrator_on_end(session_id)
         return f"registered: {session_id} ({target_state.value})"
+
+    # Keep the stored pid pointing at the live agent process. Sessions
+    # registered by older hooks recorded an ephemeral shell pid that dies
+    # immediately, leaving the session stuck looking 'done'. Re-anchoring it
+    # here (and the update_state below) revives such phantom rows.
+    if agent_pid is not None and existing.pid != agent_pid:
+        conn.execute(
+            "UPDATE sessions SET pid=? WHERE id=?", (agent_pid, session_id),
+        )
+        conn.commit()
+        existing.pid = agent_pid
 
     # For heartbeat-only events, update last_seen + tool info.
     if event_name in HEARTBEAT_ONLY_EVENTS and existing.state == SessionState.RUNNING.value:

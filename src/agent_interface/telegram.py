@@ -612,6 +612,24 @@ def _handle_callback(token: str, cb: dict) -> None:
             })
 
 
+def _format_ambiguous(matches: list, limit: int = 6) -> str:
+    """Render an ambiguous-match list that the user can act on.
+
+    Labels are often empty or duplicated across sessions, so listing only the
+    label gives no way to disambiguate. Show the pid (which is itself a unique
+    query — reply with @<pid>) plus the project dir.
+    """
+    lines = ["Ambiguous — reply with <code>@&lt;pid&gt; your message</code>:"]
+    for s in matches[:limit]:
+        pid = s.pid if s.pid else "—"
+        proj = _compact_cwd(s.cwd).rsplit("/", 1)[-1] if s.cwd else "?"
+        label = s.label or s.id[:8]
+        lines.append(f"• <code>{pid}</code> · {_html_escape(label)} · <i>{_html_escape(proj)}</i>")
+    if len(matches) > limit:
+        lines.append(f"…and {len(matches) - limit} more")
+    return "\n".join(lines)
+
+
 def _handle_at_reply(text: str) -> None:
     """Handle @query message — find session and send message in one step.
 
@@ -639,13 +657,14 @@ def _handle_at_reply(text: str) -> None:
         query, message = parts
 
     conn = get_connection()
-    matches = find_session(conn, query)
+    # Reply routing must target a live session — exclude done/archived so a
+    # query can't resolve to a dead session whose tmux pane is gone.
+    matches = find_session(conn, query, active_only=True)
     if len(matches) == 0:
-        send_message(f"No session matching: {query}")
+        send_message(f"No active session matching: {query}")
         return
     if len(matches) > 1:
-        labels = [f"• {s.label or s.id}" for s in matches[:5]]
-        send_message("Ambiguous:\n" + "\n".join(labels))
+        send_message(_format_ambiguous(matches))
         return
 
     s = matches[0]
@@ -739,8 +758,7 @@ def _handle_command(token: str, chat_id: int, text: str) -> None:
         if not matches:
             send_message(f"No session matching: {parts[1]}")
         elif len(matches) > 1:
-            labels = [f"• {s.label or s.id}" for s in matches[:5]]
-            send_message("Ambiguous:\n" + "\n".join(labels))
+            send_message(_format_ambiguous(matches))
         else:
             _send_session_cards(matches)
 

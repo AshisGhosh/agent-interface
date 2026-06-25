@@ -523,6 +523,205 @@ def cmd_scan() -> None:
         console.print("[dim]All found sessions are already tracked.[/dim]")
 
 
+@app.command("doctor")
+def cmd_doctor() -> None:
+    """Reconcile the registry against live processes (reap stale/phantom sessions)."""
+    from agent_interface.registry import reconcile
+
+    conn = get_connection()
+    summary = reconcile(conn)
+    reaped = summary["reaped_exited"] + summary["reaped_reused"]
+    console.print(
+        f"Checked [cyan]{summary['checked']}[/cyan] live session(s); "
+        f"reaped [yellow]{reaped}[/yellow] "
+        f"([dim]{summary['reaped_exited']} exited, "
+        f"{summary['reaped_reused']} pid-reused[/dim])."
+    )
+
+
+@app.command("heartbeat", hidden=True)
+def cmd_heartbeat() -> None:
+    """Idempotent self-heal tick: scan, reconcile, keep the bot + dashboard alive.
+
+    Safe to run repeatedly (cron / supervisor). Never raises.
+    """
+    from agent_interface.registry import reconcile
+
+    steps: list[str] = []
+    try:
+        from agent_interface.scan import scan_and_register
+        scan_and_register()
+        steps.append("scan")
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"scan!{type(e).__name__}")
+
+    try:
+        conn = get_connection()
+        summary = reconcile(conn)
+        steps.append(f"reconcile(reaped={summary['reaped_exited'] + summary['reaped_reused']})")
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"reconcile!{type(e).__name__}")
+
+    try:
+        from agent_interface.telegram import ensure_bot_running, update_dashboard
+        ensure_bot_running()
+        update_dashboard()
+        steps.append("bot+dashboard")
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"bot!{type(e).__name__}")
+
+    try:
+        from agent_interface.optimizer import maybe_run
+        result = maybe_run()
+        steps.append("optimize" + ("+dispatched" if result.get("dispatched") else ""))
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"optimize!{type(e).__name__}")
+
+    console.print(f"heartbeat: {' · '.join(steps)}")
+
+
+@app.command("insights")
+def cmd_insights(
+    min_sessions: int = typer.Option(3, "--min", help="Min sessions per project to qualify."),
+) -> None:
+    """Show recurring agent workflows mined from session history."""
+    from agent_interface.insights import analyze_sessions
+
+    conn = get_connection()
+    opps = analyze_sessions(conn, min_sessions=min_sessions)
+    if not opps:
+        console.print("[dim]Not enough labelled session history yet.[/dim]")
+        return
+
+    for o in opps:
+        kw = ", ".join(f"{k}×{c}" for k, c in o.keywords[:5])
+        console.print(
+            f"[bold]{_compact_cwd(o.repo)}[/bold]  "
+            f"[cyan]{o.session_count}[/cyan] sessions  "
+            f"[dim](score {o.score:.1f})[/dim]"
+        )
+        console.print(f"    [dim]{kw}[/dim]")
+
+
+optimize_app = typer.Typer(help="Autonomous self-improvement loop.")
+app.add_typer(optimize_app, name="optimize")
+
+
+@optimize_app.command("status")
+def cmd_optimize_status() -> None:
+    """Show optimizer config, guardrail state, and recent dispatches."""
+    import time
+
+    from agent_interface.optimizer import (
+        KILLSWITCH_PATH,
+        _config,
+        load_state,
+        should_dispatch,
+    )
+
+    cfg = _config()
+    state = load_state()
+    decision = should_dispatch(state, cfg, time.time(), killswitch=KILLSWITCH_PATH.exists())
+    console.print(f"  enabled:        {cfg['enabled']}")
+    console.print(f"  kill-switch:    {'PRESENT' if KILLSWITCH_PATH.exists() else 'off'}")
+    console.print(f"  daily cap:      {cfg['max_dispatches_per_day']}")
+    console.print(f"  min interval:   {cfg['min_interval_seconds']}s")
+    day = state.get("day") or "—"
+    console.print(f"  dispatched today: {state.get('dispatches_today', 0)} (day {day})")
+    console.print(f"  next action:    [{'green' if decision.ok else 'yellow'}]{decision.reason}[/]")
+
+
+@optimize_app.command("enable")
+def cmd_optimize_enable() -> None:
+    """Turn the autonomous loop on (writes config.optimizer.enabled=true)."""
+    _set_optimizer_enabled(True)
+    console.print("[green]Optimizer enabled.[/green] Disable instantly with: agi optimize kill")
+
+
+@optimize_app.command("disable")
+def cmd_optimize_disable() -> None:
+    """Turn the autonomous loop off."""
+    _set_optimizer_enabled(False)
+    console.print("Optimizer disabled.")
+
+
+@optimize_app.command("kill")
+def cmd_optimize_kill() -> None:
+    """Drop the kill-switch file — hard-stops the loop immediately."""
+    from agent_interface.optimizer import KILLSWITCH_PATH
+
+    KILLSWITCH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KILLSWITCH_PATH.write_text("disabled by `agi optimize kill`\n")
+    console.print(f"[red]Kill-switch set.[/red] Remove {KILLSWITCH_PATH} to resume.")
+
+
+@optimize_app.command("run")
+def cmd_optimize_run() -> None:
+    """Run one optimizer tick now (respects all guardrails)."""
+    from agent_interface.optimizer import maybe_run
+
+    result = maybe_run()
+    if result.get("dispatched"):
+        console.print(
+            f"[green]Dispatched[/green] task {result['task_id']} "
+            f"for {_compact_cwd(result['repo'])}."
+        )
+    else:
+        console.print(f"[dim]No dispatch: {result.get('reason')}[/dim]")
+
+
+def _set_optimizer_enabled(value: bool) -> None:
+    import json
+
+    from agent_interface.telegram import CONFIG_PATH
+
+    cfg = {}
+    if CONFIG_PATH.exists():
+        try:
+            cfg = json.loads(CONFIG_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+    cfg.setdefault("optimizer", {})["enabled"] = value
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+supervisor_app = typer.Typer(help="Keep agi up across crashes and reboots (systemd).")
+app.add_typer(supervisor_app, name="supervisor")
+
+
+@supervisor_app.command("install")
+def cmd_supervisor_install() -> None:
+    """Install systemd user units (bot + heartbeat timer) and enable lingering."""
+    from agent_interface import supervisor
+
+    ok, log = supervisor.install()
+    for line in log:
+        console.print(f"  {line}")
+    console.print("[green]Supervisor installed.[/green]" if ok else "[red]Install failed.[/red]")
+
+
+@supervisor_app.command("status")
+def cmd_supervisor_status() -> None:
+    """Show the state of the managed systemd units."""
+    from agent_interface import supervisor
+
+    for unit, state in supervisor.status().items():
+        color = "green" if state == "active" else "yellow"
+        console.print(f"  {unit}: [{color}]{state}[/]")
+
+
+@supervisor_app.command("uninstall")
+def cmd_supervisor_uninstall() -> None:
+    """Remove the systemd user units."""
+    from agent_interface import supervisor
+
+    ok, log = supervisor.uninstall()
+    for line in log:
+        console.print(f"  {line}")
+    console.print("Supervisor removed." if ok else "[red]Uninstall failed.[/red]")
+
+
 @app.command("bot")
 def cmd_bot(
     foreground: bool = typer.Option(False, "--fg", help="Run in foreground."),
@@ -537,11 +736,21 @@ def cmd_bot(
 
     if foreground:
         console.print("Starting Telegram bot in foreground... (Ctrl+C to stop)")
+        # Claim the pidfile so heartbeat's ensure_bot_running() sees this bot
+        # (e.g. when systemd owns it) and never spawns a second long-poller —
+        # Telegram getUpdates allows only one, a duplicate causes 409 conflicts.
+        import os as _os
+
+        from agent_interface.telegram import PIDFILE_PATH
+        PIDFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PIDFILE_PATH.write_text(str(_os.getpid()))
         try:
             send_message("agi bot started. Send /help for commands.")
             poll_and_reply()
         except KeyboardInterrupt:
             console.print("\nBot stopped.")
+        finally:
+            PIDFILE_PATH.unlink(missing_ok=True)
         return
 
     if _bot_pid_alive():
