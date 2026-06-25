@@ -190,13 +190,24 @@ def maybe_run(now: Optional[float] = None) -> dict[str, Any]:
             return {"dispatched": False, "reason": decision.reason}
 
         from agent_interface.db import get_connection as base_conn
+        from agent_interface.insights import active_opportunities
         # Use cases come from OTHER projects' agent activity — exclude
         # agent-interface itself, since features must help external work.
+        # Prefer projects with a *currently active* session (live work),
+        # falling back to historical volume.
         repo = cfg.get("dispatch_cwd") or _default_repo()
-        opportunities = [
-            o for o in analyze_sessions(base_conn()) if o.repo.rstrip("/") != repo.rstrip("/")
-        ]
-        target = select_target(opportunities, state.get("acted_repos", []))
+        conn = base_conn()
+
+        def _external(opps):
+            return [o for o in opps if o.repo.rstrip("/") != repo.rstrip("/")]
+
+        target = select_target(
+            _external(active_opportunities(conn)), state.get("acted_repos", []),
+        )
+        if target is None:
+            target = select_target(
+                _external(analyze_sessions(conn)), state.get("acted_repos", []),
+            )
         if target is None:
             return {"dispatched": False, "reason": "no fresh cross-project opportunity"}
 

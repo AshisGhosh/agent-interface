@@ -140,3 +140,45 @@ def analyze_sessions(
 
     opportunities.sort(key=lambda o: o.score, reverse=True)
     return opportunities
+
+
+def active_opportunities(conn, *, top_keywords: int = 6, sample_labels: int = 4):
+    """Opportunities for projects with a *currently active* agent session.
+
+    Unlike :func:`analyze_sessions` (which ranks by historical volume and needs
+    a minimum session count), this surfaces any project an agent is working in
+    right now — even brand-new ones like a single Spellblade session — so the
+    optimizer can target live work. Keywords are drawn from all of the repo's
+    labels so even a one-session project yields a usable use-case signal.
+    """
+    from agent_interface.states import ACTIVE_STATES
+
+    rows = conn.execute(
+        "SELECT repo_root, cwd, label, state FROM sessions WHERE label IS NOT NULL AND label != ''",
+    ).fetchall()
+
+    by_repo: dict[str, list[str]] = {}
+    active_repos: set[str] = set()
+    for row in rows:
+        key = _repo_key(row)
+        if not key:
+            continue
+        by_repo.setdefault(key, []).append(row["label"])
+        if row["state"] in ACTIVE_STATES:
+            active_repos.add(key)
+
+    opportunities: list[WorkflowOpportunity] = []
+    for repo in active_repos:
+        labels = by_repo[repo]
+        counter: Counter[str] = Counter()
+        for label in labels:
+            counter.update(set(_tokenize(label)))
+        opportunities.append(WorkflowOpportunity(
+            repo=repo,
+            session_count=len(labels),
+            keywords=counter.most_common(top_keywords),
+            sample_labels=labels[:sample_labels],
+        ))
+
+    opportunities.sort(key=lambda o: o.score, reverse=True)
+    return opportunities

@@ -1,6 +1,11 @@
 """Tests for workflow discovery from session history."""
 
-from agent_interface.insights import WorkflowOpportunity, _tokenize, analyze_sessions
+from agent_interface.insights import (
+    WorkflowOpportunity,
+    _tokenize,
+    active_opportunities,
+    analyze_sessions,
+)
 from agent_interface.models import Session
 from agent_interface.registry import register_session
 
@@ -83,6 +88,31 @@ def test_task_ids_and_boilerplate_filtered():
     assert "autonomous" not in toks
     assert "agent" not in toks
     assert "t-8a19ca73" not in toks
+
+
+def test_active_opportunities_surface_live_projects(conn):
+    """A project with even ONE active session shows up (unlike analyze_sessions,
+    which needs min_sessions) — this is the Spellblade case."""
+    register_session(conn, Session(
+        id="sb", state="running", repo_root="/repo/spellblade",
+        label="Unity art-overhaul eval assessment",
+    ))
+    # A project with history but no active session must NOT surface here.
+    for i in range(5):
+        register_session(conn, _labelled(f"old{i}", "/repo/dormant", "old batch work"))
+
+    opps = active_opportunities(conn)
+    repos = [o.repo for o in opps]
+    assert "/repo/spellblade" in repos
+    assert "/repo/dormant" not in repos
+    # Keywords drawn from the one active label.
+    kw = dict(next(o for o in opps if o.repo == "/repo/spellblade").keywords)
+    assert "eval" in kw
+
+
+def test_active_opportunities_empty_when_none_active(conn):
+    register_session(conn, _labelled("d0", "/repo/x", "done work"))  # state=done
+    assert active_opportunities(conn) == []
 
 
 def test_results_sorted_by_score(conn):
