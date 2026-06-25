@@ -129,27 +129,35 @@ def select_target(
     return None
 
 
-def build_task_spec(opp: WorkflowOpportunity) -> tuple[str, str]:
-    """Turn an opportunity into a scoped, defensive task for an agent."""
+def build_task_spec(opp: WorkflowOpportunity, *, feature_id: str) -> tuple[str, str]:
+    """Turn a cross-project use-case into a scoped agi-feature task.
+
+    The feature is built IN agent-interface (the cross-project agi tooling) but
+    must help agents working in OTHER projects — inspired by the real activity
+    `opp` represents. It must be genuinely usable, and instrument its own usage
+    so the loop can later tell whether it actually got used.
+    """
     kw = ", ".join(k for k, _ in opp.keywords[:5]) or "recurring work"
-    repo_name = opp.repo.rstrip("/").rsplit("/", 1)[-1] or opp.repo
-    title = f"Automate recurring workflow in {repo_name}: {kw}"[:80]
+    title = f"Ship agi feature for cross-project use: {kw}"[:80]
     samples = "\n".join(f"  - {s}" for s in opp.sample_labels)
     description = (
-        f"The session registry shows {opp.session_count} agent sessions in "
-        f"`{opp.repo}` clustering around: {kw}.\n\n"
-        f"Representative tasks:\n{samples}\n\n"
-        "Goal: design ONE reusable automation that would make this recurring "
-        "work faster next time. Concretely:\n"
-        f"  1. Write a markdown playbook at `docs/workflows/{repo_name}-"
-        f"{(opp.keywords[0][0] if opp.keywords else 'workflow')}.md` describing "
-        "the workflow step by step.\n"
-        "  2. If — and only if — there is an obviously safe, mechanical helper "
-        "(a script or a saved slash-command), add it.\n\n"
-        "Constraints: do NOT modify unrelated code, do NOT delete data, do NOT "
-        "touch credentials or external services. Keep the change small and "
-        "self-contained. If nothing safe and useful can be built, write the "
-        "playbook only and call done explaining why."
+        "Ship a small, genuinely useful **agi feature** (a new `agi` subcommand "
+        "or capability in THIS repo, agent-interface) that helps coding agents "
+        f"working in OTHER projects — inspired by real activity in `{opp.repo}` "
+        f"({opp.session_count} sessions) clustering around: {kw}.\n\n"
+        f"Representative tasks observed there:\n{samples}\n\n"
+        "Requirements:\n"
+        "  1. Implement the feature in `src/agent_interface/` and wire it into "
+        "the CLI (`cli.py`) as a new `agi` command/flag. It must work from ANY "
+        "project directory, not just agent-interface.\n"
+        "  2. Instrument usage: at the feature's entry point call "
+        f"`from agent_interface.usage import record_usage; record_usage('{feature_id}')` "
+        "so the loop can verify it actually gets used.\n"
+        "  3. Add tests under `tests/` and keep `scripts/preflight.sh` green.\n"
+        "  4. Document the command in README.md.\n\n"
+        "Constraints: ship ONE focused, working feature (not a doc). Do NOT "
+        "modify unrelated code, delete data, or touch credentials/external "
+        "services. Make sure preflight passes before calling done."
     )
     return title, description
 
@@ -182,10 +190,15 @@ def maybe_run(now: Optional[float] = None) -> dict[str, Any]:
             return {"dispatched": False, "reason": decision.reason}
 
         from agent_interface.db import get_connection as base_conn
-        opportunities = analyze_sessions(base_conn())
+        # Use cases come from OTHER projects' agent activity — exclude
+        # agent-interface itself, since features must help external work.
+        repo = cfg.get("dispatch_cwd") or _default_repo()
+        opportunities = [
+            o for o in analyze_sessions(base_conn()) if o.repo.rstrip("/") != repo.rstrip("/")
+        ]
         target = select_target(opportunities, state.get("acted_repos", []))
         if target is None:
-            return {"dispatched": False, "reason": "no fresh opportunity"}
+            return {"dispatched": False, "reason": "no fresh cross-project opportunity"}
 
         result = _dispatch_for(target, cfg)
 
@@ -241,23 +254,30 @@ def _dispatch_for(opp: WorkflowOpportunity, cfg: dict[str, Any]) -> dict[str, An
         autonomy="full",
     )
 
-    title, description = build_task_spec(opp)
+    import uuid
+    feature_id = f"feat-{uuid.uuid4().hex[:8]}"
+    title, description = build_task_spec(opp, feature_id=feature_id)
     task = core.add_task(
         conn, proj.id, title,
         description=description,
-        tags=["self-improve"],
+        tags=["self-improve", "feature"],
         creator="optimizer",
         status="ready",
     )
 
     cwd = cfg.get("dispatch_cwd") or _default_repo()
     res = dispatch_task(task.id, cwd=cwd, worktree=True)
+
+    # Register the feature so the loop can later judge whether it got used.
+    from agent_interface import features
+    features.register(feature_id, title, task_id=task.id, helps=opp.repo)
+
     try:
         from agent_interface.telegram import send_message
-        send_message(f"🚀 <b>self-improve</b> dispatched: {title[:70]}")
+        send_message(f"🚀 <b>self-improve</b> dispatched feature: {title[:65]}")
     except Exception:  # noqa: BLE001
         pass
-    return {"task_id": task.id, "session_id": res.session_id}
+    return {"task_id": task.id, "session_id": res.session_id, "feature_id": feature_id}
 
 
 def _default_repo() -> str:

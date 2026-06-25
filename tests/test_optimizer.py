@@ -115,17 +115,19 @@ def test_select_none_when_all_acted():
 # ── task spec ─────────────────────────────────────────────────────────────────
 
 
-def test_build_task_spec_is_scoped_and_defensive():
+def test_build_task_spec_is_feature_oriented_and_instrumented():
     opp = WorkflowOpportunity(
         repo="/home/u/proj", session_count=6,
         keywords=[("deploy", 5), ("ci", 3)],
         sample_labels=["deploy to staging", "fix ci"],
     )
-    title, desc = build_task_spec(opp)
-    assert "proj" in title
+    title, desc = build_task_spec(opp, feature_id="feat-abc123")
     assert len(title) <= 80
-    assert "do NOT delete data" in desc
-    assert "docs/workflows/" in desc
+    assert "agi feature" in desc.lower()
+    # Must reference the external project it helps, and instrument usage.
+    assert "/home/u/proj" in desc
+    assert "record_usage('feat-abc123')" in desc
+    assert "OTHER projects" in desc
 
 
 # ── maybe_run never raises ────────────────────────────────────────────────────

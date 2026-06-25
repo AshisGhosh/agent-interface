@@ -613,7 +613,50 @@ def cmd_heartbeat() -> None:
     except Exception as e:  # noqa: BLE001
         steps.append(f"optimize!{type(e).__name__}")
 
+    try:
+        from agent_interface import features
+        verdict = features.evaluate(get_connection())
+        if verdict["used"] or verdict["failed"]:
+            steps.append(f"features(used={len(verdict['used'])},failed={len(verdict['failed'])})")
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"features!{type(e).__name__}")
+
     console.print(f"heartbeat: {' · '.join(steps)}")
+
+
+usage_app = typer.Typer(help="Feature-usage ledger (records whether shipped features get used).")
+app.add_typer(usage_app, name="usage")
+
+
+@usage_app.command("record")
+def cmd_usage_record(
+    feature_id: str,
+    source: Optional[str] = typer.Option(None, "--source", help="Where the use came from."),
+) -> None:
+    """Record one use of a shipped feature (called by the feature itself)."""
+    from agent_interface.usage import record_usage
+
+    record_usage(feature_id, source=source)
+
+
+@app.command("features")
+def cmd_features() -> None:
+    """Show autonomously-shipped features and whether they've been used."""
+    from agent_interface.features import list_features
+    from agent_interface.usage import usage_count
+
+    feats = list_features()
+    if not feats:
+        console.print("[dim]No features shipped by the optimizer yet.[/dim]")
+        return
+    conn = get_connection()
+    for f in feats:
+        uses = usage_count(conn, f["id"], since=f.get("shipped_at"))
+        color = {"used": "green", "failed": "red", "shipped": "yellow"}.get(f["status"], "dim")
+        console.print(
+            f"  [{color}]{f['status']}[/]  {f['title'][:50]}  "
+            f"[dim]{uses} uses · helps {_compact_cwd(f.get('helps') or '?')}[/dim]"
+        )
 
 
 @app.command("insights")
