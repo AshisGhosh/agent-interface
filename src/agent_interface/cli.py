@@ -621,6 +621,14 @@ def cmd_heartbeat() -> None:
     except Exception as e:  # noqa: BLE001
         steps.append(f"features!{type(e).__name__}")
 
+    try:
+        from agent_interface import dashboards
+        restarted = dashboards.ensure_up()["restarted"]
+        if restarted:
+            steps.append(f"dash(restarted={len(restarted)})")
+    except Exception as e:  # noqa: BLE001
+        steps.append(f"dash!{type(e).__name__}")
+
     console.print(f"heartbeat: {' · '.join(steps)}")
 
 
@@ -1815,6 +1823,113 @@ def cmd_features() -> None:
             f"  [{color}]{f['status']}[/]  {f['title'][:50]}  "
             f"[dim]{uses} uses · helps {_compact_cwd(f.get('helps') or '?')}[/dim]"
         )
+
+
+dash_app = typer.Typer(help="First-class project dashboards (declare, keep up, open).")
+app.add_typer(dash_app, name="dash")
+
+
+@dash_app.callback(invoke_without_command=True)
+def dash_default(
+    ctx: typer.Context,
+    all_projects: bool = typer.Option(False, "--all", "-a", help="List across all projects."),
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+) -> None:
+    """List this project's dashboards (default). Subcommands: add/up/open/rm."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from agent_interface import dashboards
+
+    rows = dashboards.list_dashboards(cwd=cwd, all_projects=all_projects)
+    if not rows:
+        console.print(
+            "[dim]No dashboards declared. Add one:[/dim] "
+            "agi dash add <name> -- <command>"
+        )
+        return
+    for r in rows:
+        color = "green" if r["status"] == "up" else "dim"
+        sup = "" if r["supervised"] else " [dim](unsupervised)[/dim]"
+        loc = f"  [dim]{_compact_cwd(r['repo'])}[/dim]" if all_projects else ""
+        console.print(f"  [{color}]{r['status']:4}[/] [cyan]{r['name']}[/cyan]{sup}{loc}")
+        if r["url"]:
+            console.print(f"        [blue]{r['url']}[/blue]")
+        console.print(f"        [dim]{r['cmd'][:54]}[/dim]")
+
+
+@dash_app.command("add", context_settings={"ignore_unknown_options": True})
+def cmd_dash_add(
+    name: str,
+    cmd: list[str] = typer.Argument(..., help="Command to launch (after the name)."),
+    url: Optional[str] = typer.Option(None, "--url", help="Dashboard URL, e.g. http://localhost:3000."),
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+    no_supervise: bool = typer.Option(
+        False, "--no-supervise", help="Don't auto-restart it from the heartbeat.",
+    ),
+) -> None:
+    """Declare a project's dashboard once: agi dash add web -- npm run dev"""
+    from agent_interface import dashboards
+
+    d = dashboards.declare(name, cmd, url=url, cwd=cwd, supervised=not no_supervise)
+    sup = "supervised" if d["supervised"] else "unsupervised"
+    console.print(f"[green]declared[/green] dashboard [cyan]{name}[/cyan] ({sup}).")
+    console.print(f"  bring it up: agi dash up {name}")
+
+
+@dash_app.command("up")
+def cmd_dash_up(
+    name: Optional[str] = typer.Argument(None, help="Dashboard to start (default: all)."),
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+) -> None:
+    """Start a declared dashboard (idempotent — reuses it if already up)."""
+    from agent_interface import dashboards
+
+    results = dashboards.up(name, cwd=cwd)
+    if not results:
+        console.print("[dim]No matching dashboard. Declare one with `agi dash add`.[/dim]")
+        return
+    for r in results:
+        console.print(f"  [green]{r['status']}[/green] [cyan]{r['name']}[/cyan]"
+                      + (f"  [blue]{r['url']}[/blue]" if r.get("url") else ""))
+
+
+@dash_app.command("open")
+def cmd_dash_open(
+    name: str,
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+) -> None:
+    """Print (and try to open) a dashboard's URL, starting it if needed."""
+    from agent_interface import dashboards
+
+    d = dashboards.get(name, cwd=cwd)
+    if d is None:
+        console.print(f"[red]No dashboard '{name}' in this project.[/red]", highlight=False)
+        raise typer.Exit(1)
+    dashboards.up(name, cwd=cwd)
+    if not d["url"]:
+        console.print(
+            f"[yellow]{name} has no URL.[/yellow] "
+            f"Set one: agi dash add {name} --url <url> -- <cmd>"
+        )
+        return
+    console.print(d["url"], highlight=False)
+    import webbrowser
+    try:
+        webbrowser.open(d["url"])
+    except Exception:  # noqa: BLE001 — headless/remote: printing the URL is enough
+        pass
+
+
+@dash_app.command("rm")
+def cmd_dash_rm(
+    name: str,
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+) -> None:
+    """Remove a dashboard declaration (does not stop a running process)."""
+    from agent_interface import dashboards
+
+    console.print(f"[green]removed[/green] {name}." if dashboards.remove(name, cwd=cwd)
+                  else f"[dim]no dashboard '{name}'.[/dim]")
 
 
 @app.command("up", context_settings={"ignore_unknown_options": True})
