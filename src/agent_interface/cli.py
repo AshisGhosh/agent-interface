@@ -1990,6 +1990,16 @@ def cmd_down(
         console.print(f"[dim]{name}: not running (marked stopped).[/dim]")
 
 
+@app.command("commands")
+def cmd_commands() -> None:
+    """List the cross-project agi tools available from any project."""
+    from agent_interface.catalog import agent_tools
+
+    console.print("[bold]agi tools[/bold] (work from any project — `agi <cmd> -h` for details):\n")
+    for name, help_ in agent_tools():
+        console.print(f"  [cyan]agi {name:10}[/cyan] [dim]{help_}[/dim]")
+
+
 @app.command("insights")
 def cmd_insights(
     min_sessions: int = typer.Option(3, "--min", help="Min sessions per project to qualify."),

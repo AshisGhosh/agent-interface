@@ -141,9 +141,22 @@ def generate_hook_config() -> dict[str, list[dict]]:
     return {event: [_build_hook_entry()] for event in HOOK_EVENTS}
 
 
+def _full_instruction() -> str:
+    """The static guidance plus a live-generated catalog of agi tools, so agents
+    in any project discover newly-shipped features automatically."""
+    base = AGI_INSTRUCTION.rstrip()
+    try:
+        from agent_interface.catalog import render_markdown
+        catalog = render_markdown()
+    except Exception:  # noqa: BLE001 — never let catalog generation break install
+        catalog = ""
+    return (base + "\n\n" + catalog + "\n") if catalog else (base + "\n")
+
+
 def _install_claude_md() -> str:
     """Append agi instruction to ~/.claude/CLAUDE.md if not already present."""
     CLAUDE_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    instruction = _full_instruction()
 
     if CLAUDE_MD_PATH.exists():
         content = CLAUDE_MD_PATH.read_text()
@@ -152,13 +165,13 @@ def _install_claude_md() -> str:
             import re
 
             pattern = re.escape(AGI_INSTRUCTION_MARKER) + r".*?(?=\n<!-- |$)"
-            content = re.sub(pattern, AGI_INSTRUCTION.rstrip(), content, flags=re.DOTALL)
+            content = re.sub(pattern, instruction.rstrip(), content, flags=re.DOTALL)
             CLAUDE_MD_PATH.write_text(content)
             return "CLAUDE.md instruction updated."
     else:
         content = ""
 
-    content = content.rstrip() + "\n\n" + AGI_INSTRUCTION if content else AGI_INSTRUCTION
+    content = content.rstrip() + "\n\n" + instruction if content else instruction
     CLAUDE_MD_PATH.write_text(content)
     return "CLAUDE.md instruction added."
 
