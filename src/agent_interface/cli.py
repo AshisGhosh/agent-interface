@@ -1817,6 +1817,64 @@ def cmd_features() -> None:
         )
 
 
+@app.command("up", context_settings={"ignore_unknown_options": True})
+def cmd_up(
+    cmd: Optional[list[str]] = typer.Argument(None, help="Command to run (omit to list daemons)."),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Name for this daemon."),
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+    all_projects: bool = typer.Option(False, "--all", "-a", help="List across all projects."),
+) -> None:
+    """Launch a durable, detached background process (dashboard, server, watcher).
+
+    The process survives the current turn/session (started via setsid, output
+    to a log). agi never reaps it. With no command, lists tracked daemons.
+
+      agi up npm run dev --name dash     # launch, detached + logged
+      agi up                             # list this project's daemons
+      agi down dash                      # stop it
+    """
+    from agent_interface import daemon
+
+    if not cmd:
+        rows = daemon.list_daemons(cwd=cwd, all_projects=all_projects)
+        if not rows:
+            console.print("[dim]No daemons. Launch one: agi up <cmd> --name <name>[/dim]")
+            return
+        for r in rows:
+            color = "green" if r["status"] == "running" else "dim"
+            console.print(
+                f"  [{color}]{r['status']:8}[/] [cyan]{r['name']}[/cyan] "
+                f"pid={r['pid']}  [dim]{r['cmd'][:40]}[/dim]"
+            )
+            console.print(f"           [dim]log: {r['log_path']}[/dim]")
+        return
+
+    try:
+        info = daemon.launch(cmd, name=name, cwd=cwd)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]", highlight=False)
+        raise typer.Exit(1)
+    console.print(
+        f"[green]up[/green] [cyan]{info['name']}[/cyan] (pid {info['pid']}) — "
+        "detached, survives this session."
+    )
+    console.print(f"  [dim]log: {info['log_path']}[/dim]  ·  stop with: agi down {info['name']}")
+
+
+@app.command("down")
+def cmd_down(
+    name: str,
+    cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory."),
+) -> None:
+    """Stop a daemon started with `agi up`."""
+    from agent_interface import daemon
+
+    if daemon.stop(name, cwd=cwd):
+        console.print(f"[green]down[/green] {name} (SIGTERM sent).")
+    else:
+        console.print(f"[dim]{name}: not running (marked stopped).[/dim]")
+
+
 @app.command("insights")
 def cmd_insights(
     min_sessions: int = typer.Option(3, "--min", help="Min sessions per project to qualify."),

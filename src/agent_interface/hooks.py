@@ -48,6 +48,15 @@ Otherwise run:
 
 Keep the summary short and descriptive. Update it if the focus of work changes significantly.
 Do not update the label on every prompt — only when the task itself changes.
+
+### Long-running processes
+agi never kills your processes — its reaping only updates session bookkeeping in a
+database. To launch something durable (a dev server, dashboard, watcher) that must
+survive past this turn/session, use `agi up`:
+  agi up <command> --name <name>   # detached + logged; survives the session
+  agi up                           # list this project's daemons
+  agi down <name>                  # stop it
+Don't avoid launching long-running processes for fear of being "reaped" — use `agi up`.
 """
 
 HOOK_EVENTS = [
